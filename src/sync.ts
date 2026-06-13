@@ -290,7 +290,7 @@ export class S3SyncManager {
 		
 		let uploadData = rawData;
 		if (this.settings.encrypt && cryptoKey) {
-			uploadData = await encryptBuffer(rawData, cryptoKey, this.settings.compress);
+			uploadData = await encryptBuffer(rawData, cryptoKey, this.settings.compress, file.stat.mtime);
 		}
 
 		const s3Key = await this.getS3Key(path, cryptoKey);
@@ -322,7 +322,8 @@ export class S3SyncManager {
 
 		let plainData = encData;
 		if (this.settings.encrypt && cryptoKey) {
-			plainData = await decryptBuffer(encData, cryptoKey, this.settings.compress);
+			const res = await decryptBuffer(encData, cryptoKey, this.settings.compress, true);
+			plainData = res.decrypted;
 		}
 
 		// Ensure directories exist locally
@@ -367,8 +368,13 @@ export class S3SyncManager {
 		// 1. Download and decrypt remote content
 		const encRemoteData = await s3Client.getObject(s3Key);
 		let remoteData = encRemoteData;
+		let remoteEditMtime = Date.parse(remoteLastModified);
 		if (this.settings.encrypt && cryptoKey) {
-			remoteData = await decryptBuffer(encRemoteData, cryptoKey, this.settings.compress);
+			const res = await decryptBuffer(encRemoteData, cryptoKey, this.settings.compress, true);
+			remoteData = res.decrypted;
+			if (res.mtime !== undefined) {
+				remoteEditMtime = res.mtime;
+			}
 		}
 
 		if (isText) {
@@ -390,7 +396,7 @@ export class S3SyncManager {
 
 			// Compare timestamps to find which edit was earlier
 			const localMtime = localFile.stat.mtime;
-			const remoteMtime = Date.parse(remoteLastModified);
+			const remoteMtime = remoteEditMtime;
 			const localIsEarlier = localMtime < remoteMtime;
 
 			// Perform 3-way merge using diff3Merge
@@ -423,7 +429,7 @@ export class S3SyncManager {
 			// Encrypt and upload merged file to S3
 			let uploadData = mergedBuffer;
 			if (this.settings.encrypt && cryptoKey) {
-				uploadData = await encryptBuffer(mergedBuffer, cryptoKey, this.settings.compress);
+				uploadData = await encryptBuffer(mergedBuffer, cryptoKey, this.settings.compress, localFile.stat.mtime);
 			}
 			const newEtag = await s3Client.putObject(s3Key, uploadData);
 
@@ -465,7 +471,7 @@ export class S3SyncManager {
 			const conflictS3Key = await this.getS3Key(conflictPath, cryptoKey);
 			let conflictUploadData = localData;
 			if (this.settings.encrypt && cryptoKey) {
-				conflictUploadData = await encryptBuffer(localData, cryptoKey, this.settings.compress);
+				conflictUploadData = await encryptBuffer(localData, cryptoKey, this.settings.compress, localFile.stat.mtime);
 			}
 			const conflictEtag = await s3Client.putObject(conflictS3Key, conflictUploadData);
 

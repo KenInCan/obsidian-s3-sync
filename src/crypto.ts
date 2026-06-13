@@ -50,16 +50,27 @@ export async function decompressBuffer(buffer: ArrayBuffer): Promise<ArrayBuffer
 
 /**
  * Encrypts an ArrayBuffer using AES-GCM-256, optionally compressing it first.
- * Prepend the 12-byte IV to the output payload.
+ * Prepend the 12-byte IV to the output payload. If mtime is provided, it prepends
+ * an 8-byte Float64 local mtime prefix before compressing/encrypting.
  */
 export async function encryptBuffer(
 	buffer: ArrayBuffer,
 	key: CryptoKey,
-	compress: boolean
+	compress: boolean,
+	mtime?: number
 ): Promise<ArrayBuffer> {
 	let dataToEncrypt = buffer;
+	if (mtime !== undefined) {
+		const header = new ArrayBuffer(8);
+		new DataView(header).setFloat64(0, mtime);
+		const combined = new Uint8Array(8 + buffer.byteLength);
+		combined.set(new Uint8Array(header), 0);
+		combined.set(new Uint8Array(buffer), 8);
+		dataToEncrypt = combined.buffer;
+	}
+
 	if (compress) {
-		dataToEncrypt = await compressBuffer(buffer);
+		dataToEncrypt = await compressBuffer(dataToEncrypt);
 	}
 
 	const iv = window.crypto.getRandomValues(new Uint8Array(12));
@@ -83,12 +94,14 @@ export async function encryptBuffer(
 /**
  * Decrypts an ArrayBuffer using AES-GCM-256, optionally decompressing it afterwards.
  * Extracts the 12-byte IV from the start of the payload.
+ * If hasMtimeHeader is true, extracts the 8-byte local mtime prefix.
  */
 export async function decryptBuffer(
 	buffer: ArrayBuffer,
 	key: CryptoKey,
-	decompress: boolean
-): Promise<ArrayBuffer> {
+	decompress: boolean,
+	hasMtimeHeader: boolean = false
+): Promise<{ decrypted: ArrayBuffer; mtime?: number }> {
 	const bytes = new Uint8Array(buffer);
 	if (bytes.length < 12) {
 		throw new Error('Payload too short (missing encryption metadata)');
@@ -111,10 +124,22 @@ export async function decryptBuffer(
 		throw new Error('Decryption failed. Please check if your Encryption Passphrase is correct.');
 	}
 
+	let decompressed = decrypted;
 	if (decompress) {
-		return await decompressBuffer(decrypted);
+		decompressed = await decompressBuffer(decrypted);
 	}
-	return decrypted;
+
+	if (hasMtimeHeader) {
+		if (decompressed.byteLength < 8) {
+			throw new Error('Payload too short to contain mtime header');
+		}
+		const view = new DataView(decompressed);
+		const mtime = view.getFloat64(0);
+		const content = decompressed.slice(8);
+		return { decrypted: content, mtime };
+	}
+
+	return { decrypted: decompressed };
 }
 
 /**
