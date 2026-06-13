@@ -322,7 +322,7 @@ export class S3SyncManager {
 
 		let plainData = encData;
 		if (this.settings.encrypt && cryptoKey) {
-			const res = await decryptBuffer(encData, cryptoKey, this.settings.compress, true);
+			const res = await decryptBuffer(encData, cryptoKey, this.settings.compress);
 			plainData = res.decrypted;
 		}
 
@@ -370,7 +370,7 @@ export class S3SyncManager {
 		let remoteData = encRemoteData;
 		let remoteEditMtime = Date.parse(remoteLastModified);
 		if (this.settings.encrypt && cryptoKey) {
-			const res = await decryptBuffer(encRemoteData, cryptoKey, this.settings.compress, true);
+			const res = await decryptBuffer(encRemoteData, cryptoKey, this.settings.compress);
 			remoteData = res.decrypted;
 			if (res.mtime !== undefined) {
 				remoteEditMtime = res.mtime;

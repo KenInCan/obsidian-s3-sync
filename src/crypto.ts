@@ -51,7 +51,7 @@ export async function decompressBuffer(buffer: ArrayBuffer): Promise<ArrayBuffer
 /**
  * Encrypts an ArrayBuffer using AES-GCM-256, optionally compressing it first.
  * Prepend the 12-byte IV to the output payload. If mtime is provided, it prepends
- * an 8-byte Float64 local mtime prefix before compressing/encrypting.
+ * a 13-byte "SYNC" magic prefix (version 1) containing the local Float64 mtime.
  */
 export async function encryptBuffer(
 	buffer: ArrayBuffer,
@@ -61,11 +61,21 @@ export async function encryptBuffer(
 ): Promise<ArrayBuffer> {
 	let dataToEncrypt = buffer;
 	if (mtime !== undefined) {
-		const header = new ArrayBuffer(8);
-		new DataView(header).setFloat64(0, mtime);
-		const combined = new Uint8Array(8 + buffer.byteLength);
+		const header = new ArrayBuffer(13);
+		const view = new DataView(header);
+		// Write magic bytes "SYNC"
+		view.setUint8(0, 0x53); // 'S'
+		view.setUint8(1, 0x59); // 'Y'
+		view.setUint8(2, 0x4e); // 'N'
+		view.setUint8(3, 0x43); // 'C'
+		// Write format version 1
+		view.setUint8(4, 1);
+		// Write mtime (8 bytes)
+		view.setFloat64(5, mtime);
+
+		const combined = new Uint8Array(13 + buffer.byteLength);
 		combined.set(new Uint8Array(header), 0);
-		combined.set(new Uint8Array(buffer), 8);
+		combined.set(new Uint8Array(buffer), 13);
 		dataToEncrypt = combined.buffer;
 	}
 
@@ -94,13 +104,12 @@ export async function encryptBuffer(
 /**
  * Decrypts an ArrayBuffer using AES-GCM-256, optionally decompressing it afterwards.
  * Extracts the 12-byte IV from the start of the payload.
- * If hasMtimeHeader is true, extracts the 8-byte local mtime prefix.
+ * Automatically detects and extracts the 13-byte "SYNC" metadata header if present.
  */
 export async function decryptBuffer(
 	buffer: ArrayBuffer,
 	key: CryptoKey,
-	decompress: boolean,
-	hasMtimeHeader: boolean = false
+	decompress: boolean
 ): Promise<{ decrypted: ArrayBuffer; mtime?: number }> {
 	const bytes = new Uint8Array(buffer);
 	if (bytes.length < 12) {
@@ -129,14 +138,20 @@ export async function decryptBuffer(
 		decompressed = await decompressBuffer(decrypted);
 	}
 
-	if (hasMtimeHeader) {
-		if (decompressed.byteLength < 8) {
-			throw new Error('Payload too short to contain mtime header');
-		}
+	// Check for magic header "SYNC" (version 1)
+	if (decompressed.byteLength >= 13) {
 		const view = new DataView(decompressed);
-		const mtime = view.getFloat64(0);
-		const content = decompressed.slice(8);
-		return { decrypted: content, mtime };
+		const isMagic = view.getUint8(0) === 0x53 && // 'S'
+		                view.getUint8(1) === 0x59 && // 'Y'
+		                view.getUint8(2) === 0x4e && // 'N'
+		                view.getUint8(3) === 0x43;   // 'C'
+		const version = view.getUint8(4);
+
+		if (isMagic && version === 1) {
+			const mtime = view.getFloat64(5);
+			const content = decompressed.slice(13);
+			return { decrypted: content, mtime };
+		}
 	}
 
 	return { decrypted: decompressed };
