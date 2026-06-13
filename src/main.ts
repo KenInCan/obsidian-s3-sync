@@ -1,114 +1,160 @@
-import {
-	Editor,
-	MarkdownView,
-	MarkdownFileInfo,
-	Modal,
-	Notice,
-	Plugin,
-} from 'obsidian';
-import {
-	DEFAULT_SETTINGS,
-	MyPluginSettings,
-	SampleSettingTab,
-} from './settings';
-
-// Remember to rename these classes and interfaces!
+import { Plugin, Notice } from 'obsidian';
+import { S3SyncSettingTab, MyPluginSettings, DEFAULT_SETTINGS } from './settings';
+import { S3SyncManager, SyncDatabase } from './sync';
 
 export default class MyPlugin extends Plugin {
 	settings!: MyPluginSettings;
+	syncDb!: SyncDatabase;
+	syncManager!: S3SyncManager;
+
+	private statusBarItemEl!: HTMLElement;
+	private autoSyncIntervalId: number | null = null;
+	private lastSyncTime: string | null = null;
 
 	async onload() {
-		await this.loadSettings();
+		// 1. Load configuration and state
+		await this.loadPluginData();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (_evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+		// 2. Generate unique device name if empty
+		if (!this.settings.deviceName) {
+			const randomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+			this.settings.deviceName = `Device-${randomId}`;
+			await this.saveSettings();
+		}
+
+		// 3. Create status bar item
+		this.statusBarItemEl = this.addStatusBarItem();
+		this.updateStatusBar('Idle');
+
+		// 4. Initialize Sync Manager
+		this.syncManager = new S3SyncManager(
+			this.app,
+			this.settings,
+			this.syncDb,
+			async (updatedDb) => {
+				this.syncDb = updatedDb;
+				await this.savePluginData();
+			},
+			(status) => this.updateStatusBar(status)
+		);
+
+		// 5. Add Ribbon Icon for manual trigger
+		const ribbonIconEl = this.addRibbonIcon('cloud-lightning', 'Sync with S3', async (evt: MouseEvent) => {
+			await this.syncManager.sync();
 		});
+		ribbonIconEl.addClass('s3-sync-ribbon-class');
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
+		// 6. Add Command Palette Command
 		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
+			id: 's3-sync-now',
+			name: 'Sync now with S3',
+			callback: async () => {
+				await this.syncManager.sync();
 			},
 		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (
-				editor: Editor,
-				_ctx: MarkdownView | MarkdownFileInfo,
-			) => {
-				editor.replaceSelection('Sample editor command');
-			},
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView =
-					this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+		// 7. Add Settings Tab
+		this.addSettingTab(new S3SyncSettingTab(this.app, this));
+
+		// 8. Setup Auto-Sync interval
+		this.setupAutoSync();
+
+		// 9. Sync on Startup (if enabled)
+		if (this.settings.syncOnStartup) {
+			// Run with a 3-second delay to allow Obsidian layout to settle
+			this.app.workspace.onLayoutReady(() => {
+				setTimeout(async () => {
+					console.log('S3 Sync: Running startup sync...');
+					await this.syncManager.sync();
+				}, 3000);
+			});
+		}
+	}
+
+	onunload() {
+		console.log('Unloading S3 Sync plugin...');
+		this.clearAutoSync();
+	}
+
+	/**
+	 * Configures or re-schedules the auto-sync interval.
+	 */
+	setupAutoSync() {
+		this.clearAutoSync();
+
+		const intervalMinutes = this.settings.autoSyncInterval;
+		if (intervalMinutes > 0) {
+			console.log(`S3 Sync: Scheduling auto-sync every ${intervalMinutes} minutes.`);
+			
+			const intervalId = window.setInterval(async () => {
+				if (this.syncManager) {
+					await this.syncManager.sync();
 				}
-				return false;
-			},
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(activeDocument, 'click', (_evt: MouseEvent) => {
-			new Notice('Click');
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(
-			window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000),
-		);
+			}, intervalMinutes * 60 * 1000);
+			
+			this.autoSyncIntervalId = intervalId;
+			this.registerInterval(intervalId);
+		}
 	}
 
-	onunload() {}
-
-	async loadSettings() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<MyPluginSettings>,
-		);
+	private clearAutoSync() {
+		if (this.autoSyncIntervalId !== null) {
+			window.clearInterval(this.autoSyncIntervalId);
+			this.autoSyncIntervalId = null;
+		}
 	}
 
+	/**
+	 * Updates the status bar UI.
+	 */
+	updateStatusBar(status: string) {
+		if (!this.statusBarItemEl) return;
+
+		let statusText = 'S3 Sync: ';
+		if (status === 'Idle') {
+			statusText += this.lastSyncTime ? `Idle (Last: ${this.lastSyncTime})` : 'Idle';
+		} else if (status === 'Syncing...') {
+			statusText += 'Syncing...';
+		} else if (status === 'Success') {
+			const now = new Date();
+			const hours = String(now.getHours()).padStart(2, '0');
+			const minutes = String(now.getMinutes()).padStart(2, '0');
+			this.lastSyncTime = `${hours}:${minutes}`;
+			statusText += `Success (${this.lastSyncTime})`;
+		} else if (status === 'Error') {
+			statusText += 'Error ⚠️';
+		} else if (status === 'Configuration Error') {
+			statusText += 'Setup Required ⚙️';
+		} else {
+			statusText += status;
+		}
+
+		this.statusBarItemEl.setText(statusText);
+	}
+
+	/**
+	 * Save only settings.
+	 */
 	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.setText('Woah!');
+		await this.savePluginData();
 	}
 
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
+	/**
+	 * Load settings and sync database state from data.json.
+	 */
+	private async loadPluginData() {
+		const data = await this.loadData() || {};
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings);
+		this.syncDb = data.syncDb || { files: {} };
+	}
+
+	/**
+	 * Save settings and sync database state to data.json.
+	 */
+	private async savePluginData() {
+		await this.saveData({
+			settings: this.settings,
+			syncDb: this.syncDb
+		});
 	}
 }

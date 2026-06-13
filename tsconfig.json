@@ -7,13 +7,9 @@
 		"strict": true,
 		"noImplicitReturns": true,
 		"noFallthroughCasesInSwitch": true,
-		"noUncheckedIndexedAccess": true,
 		"moduleResolution": "node",
 		"isolatedModules": true,
-		"skipLibCheck": true,
-		"forceConsistentCasingInFileNames": true,
-		"allowSyntheticDefaultImports": true,
-		"lib": ["ES2021", "DOM"]
+		"lib": ["DOM", "ES2021"]
 	},
 	"include": ["src/**/*.ts"]
 }

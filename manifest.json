@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
-	"minAppVersion": "1.0.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
+	"id": "obsidian-s3-sync",
+	"name": "S3 Sync",
+	"version": "0.1.0",
+	"minAppVersion": "0.15.0",
+	"description": "Sync Obsidian vault with AWS S3 or any compatible storage (Cloudflare R2, MinIO, B2) with client-side encryption and auto-merging.",
+	"author": "KenInCan",
 	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
 	"isDesktopOnly": false
 }

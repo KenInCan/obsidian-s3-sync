@@ -1,92 +1,119 @@
-# Obsidian Sample Plugin
+# Obsidian S3 Sync Plugin
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+A robust, self-contained S3 synchronization plugin for Obsidian. Sync your vault with standard AWS S3 or compatible storage services (Cloudflare R2, MinIO, Backblaze B2, etc.) featuring automatic conflict resolution, **client-side zero-knowledge encryption**, and **native Gzip compression**.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+---
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
+## Key Features
 
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open modal (simple)" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and outputs a Notice on click.
-- Registers a global interval which logs 'setInterval' to the console.
+- **Multi-Provider Compatibility**: Syncs with AWS S3, Cloudflare R2, MinIO, Backblaze B2, and other compatible object stores.
+- **Zero-Knowledge Encryption**: All file contents are compressed and encrypted locally using **AES-GCM-256** (Web Crypto API) before upload. Your passphrase never leaves your device.
+- **File Name (Key) Obfuscation**: Folder structures and filenames are cryptographically obfuscated on S3 using deterministic AES-GCM encryption, preventing metadata leaks.
+- **Native Gzip Compression**: Pre-compresses text files using `CompressionStream` to reduce upload sizes by **60% to 80%** and speed up transfers.
+- **Chronological 3-Way Auto-Merge**: Overlapping text line edits are automatically resolved in order of execution (older changes on top, newer changes appended below) without injecting messy conflict markers.
+- **Binary Conflict Protection**: Conflicting binary files (images, PDFs, etc.) are safely renamed with a device-specific timestamp suffix to prevent data loss.
+- **Automatic Syncing**: Customizable periodic sync intervals and sync-on-startup support.
 
-## First time developing plugins?
+---
 
-Quick starting guide for new plugin devs:
+## Installation
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `src/main.ts` to `main.js`.
-- Make changes to `src/main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+### Manual Installation
+1. Download `main.js`, `manifest.json`, and `styles.css` from the latest release.
+2. Move them into your vault's plugin directory:
+   `<your-vault>/.obsidian/plugins/obsidian-s3-sync/`
+3. Restart Obsidian, go to **Settings** -> **Community plugins**, and enable **S3 Sync**.
 
-## Releasing new releases
+---
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+## AWS IAM Permissions
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
-
-## Adding your plugin to the community plugin list
-
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
-
-## How to use
-
-- Clone this repo.
-- Make sure your NodeJS is at least v18 (`node --version`).
-- `npm i` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
-
-## Manually installing the plugin
-
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
-
-## Improve code quality with eslint
-
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code.
-- This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
-- Together with a custom eslint [plugin](https://github.com/obsidianmd/eslint-plugin) for Obsidan specific code guidelines.
-- A GitHub action is preconfigured to automatically lint every commit on all branches.
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
+To run the sync plugin safely, the access key needs the following S3 permissions. Use this minimal IAM policy (replace `YOUR-BUCKET-NAME`):
 
 ```json
 {
-	"fundingUrl": "https://buymeacoffee.com"
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ListBucketPermissions",
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::YOUR-BUCKET-NAME"
+            ]
+        },
+        {
+            "Sid": "ObjectReadWriteDeletePermissions",
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::YOUR-BUCKET-NAME/*"
+            ]
+        }
+    ]
 }
 ```
 
-If you have multiple URLs, you can also do:
+---
 
-```json
-{
-	"fundingUrl": {
-		"Buy Me a Coffee": "https://buymeacoffee.com",
-		"GitHub Sponsor": "https://github.com/sponsors",
-		"Patreon": "https://www.patreon.com/"
-	}
-}
+## Cryptographic Security Architecture
+
+```
+                                  [ Client-Side ]
+Local Vault (Plaintext) 
+        │
+        ▼
+Compression (Gzip Stream) ──► Encryption (AES-GCM-256) ──► Path Obfuscation (Hex IV + Ciphertext)
+                                                                 │
+                                                                 ▼
+                                                       [ S3 Bucket (Obfuscated) ]
 ```
 
-## API Documentation
+### 1. Key Derivation (PBKDF2)
+- **PBKDF2-HMAC-SHA256** with **100,000 iterations** derives the 256-bit AES key.
+- **Salt**: Deterministically generated from a SHA-256 hash of the S3 bucket name. This guarantees key uniqueness per bucket without saving local salt files.
 
-See https://docs.obsidian.md
+### 2. Payload Encryption
+- Uses a secure random **12-byte Initialization Vector (IV)** per file.
+- Encrypts Gzip binary stream to construct the final upload payload: `[12-byte IV] + [Ciphertext]`.
+
+### 3. Key/Path Obfuscation
+- The S3 object key is derived by encrypting the vault-relative path (e.g. `Private/diary.md`) using AES-GCM-256 with a deterministic IV derived from the SHA-256 of the path itself.
+- S3 Key = `Prefix/` + `hex(IV)` + `hex(Ciphertext)`.
+- Other teammates using the same passphrase decode the hex key, extract the IV, and decrypt the path back to its plaintext representation.
+
+---
+
+## Conflict Resolution Matrix
+
+| Local changed? | Remote changed? | File Type | Action / Resolution |
+| :--- | :--- | :--- | :--- |
+| **No** | **No** | Any | Do nothing. |
+| **Yes** | **No** | Any | **Compress, Encrypt & Upload** local version. |
+| **No** | **Yes** | Any | **Download, Decrypt & Decompress** to local vault. |
+| **Yes** | **Yes** | **Binary** | **Rename local copy** with timestamp/device suffix, then download remote version. |
+| **Yes** | **Yes** | **Text** | **Markerless Auto-Merge**: Join overlapping lines placing earlier edit on top, upload merged file. |
+| **Deleted** | **No** | Any | **Delete Remote**: Remove S3 object. |
+| **No** | **Deleted** | Any | **Delete Local**: Remove file from vault. |
+| **Deleted** | **Yes** | Any | **Re-download**: Recreate local file from remote (remote changes win). |
+| **Yes** | **Deleted** | Any | **Re-upload**: Re-upload local file to remote (local changes win). |
+
+---
+
+## Development
+
+Build the production bundle locally:
+
+```bash
+# Install dependencies
+npm install
+
+# Build & Bundle
+npm run build
+```
