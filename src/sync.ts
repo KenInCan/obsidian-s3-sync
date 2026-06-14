@@ -3,7 +3,7 @@ import { App, Notice, TFile, TFolder } from 'obsidian';
 import { diff3Merge } from 'node-diff3';
 import { S3Client, S3ClientConfig } from './s3';
 import { deriveKey, encryptBuffer, decryptBuffer, encryptPath, decryptPath } from './crypto';
-import { normalizePath, pathToS3Key, s3KeyToPath, md5 } from './utils';
+import { normalizePath, pathToS3Key, s3KeyToPath, md5, isPathExcluded } from './utils';
 
 export interface SyncSettings {
 	endpointUrl: string;
@@ -18,6 +18,7 @@ export interface SyncSettings {
 	compress: boolean;
 	autoSyncInterval: number;
 	syncOnStartup: boolean;
+	excludedPaths: string;
 }
 
 export interface FileSyncState {
@@ -109,6 +110,9 @@ export class S3SyncManager {
 								continue;
 							}
 						}
+						if (isPathExcluded(path, this.settings.excludedPaths)) {
+							continue;
+						}
 						remoteFiles[path] = { etag: obj.etag, size: obj.size, key: obj.key, lastModified: obj.lastModified };
 					}
 				}
@@ -121,6 +125,9 @@ export class S3SyncManager {
 			for (const file of allFiles) {
 				// Exclude config directory files (e.g. .obsidian/*) and system dotfiles
 				if (file.path.startsWith('.') || file.path.includes('/.')) {
+					continue;
+				}
+				if (isPathExcluded(file.path, this.settings.excludedPaths)) {
 					continue;
 				}
 				localFiles[file.path] = {
@@ -153,6 +160,9 @@ export class S3SyncManager {
 
 			// 6. Iterate and make sync decisions
 			for (const path of allPaths) {
+				if (isPathExcluded(path, this.settings.excludedPaths)) {
+					continue;
+				}
 				const local = localFiles[path];
 				const remote = remoteFiles[path];
 				const db = dbFiles[path];

@@ -15,6 +15,7 @@ export interface MyPluginSettings {
 	compress: boolean;
 	autoSyncInterval: number; // In minutes, 0 means disabled
 	syncOnStartup: boolean;
+	excludedPaths: string;
 }
 
 export const DEFAULT_SETTINGS: MyPluginSettings = {
@@ -29,7 +30,8 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
 	passphrase: '',
 	compress: true,
 	autoSyncInterval: 0,
-	syncOnStartup: false
+	syncOnStartup: false,
+	excludedPaths: ''
 };
 
 export class S3SyncSettingTab extends PluginSettingTab {
@@ -191,6 +193,20 @@ export class S3SyncSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 					this.plugin.setupAutoSync(); // Reschedule auto sync
 				}));
+
+		new Setting(containerEl)
+			.setName('Excluded Paths')
+			.setDesc('Line-separated list of paths (folders or files, relative to vault root) to exclude from sync. E.g. "Private/" or "secret.md".')
+			.addTextArea(text => {
+				text.inputEl.rows = 4;
+				text.inputEl.style.width = '100%';
+				text.setPlaceholder('Private/\nsecret.md\n# comments are supported')
+					.setValue(this.plugin.settings.excludedPaths)
+					.onChange(async (value) => {
+						this.plugin.settings.excludedPaths = value;
+						await this.plugin.saveSettings();
+					});
+			});
 
 		// --- SECTION: SECURITY & COMPRESSION ---
 		containerEl.createEl('h3', { text: 'Security & Optimization' });

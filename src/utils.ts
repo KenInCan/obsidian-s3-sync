@@ -256,3 +256,29 @@ export function md5(data: ArrayBuffer | Uint8Array | string): string {
 
 	return hex(a) + hex(b) + hex(c) + hex(d);
 }
+
+/**
+ * Checks if a given path is excluded based on the excluded paths setting string.
+ * Each line in the setting represents a rule.
+ * Slashes are normalized. Lines starting with # are comments.
+ */
+export function isPathExcluded(path: string, excludedPathsSetting: string): boolean {
+	if (!excludedPathsSetting) return false;
+	const rules = excludedPathsSetting
+		.split('\n')
+		.map(line => line.trim())
+		.filter(line => line.length > 0 && !line.startsWith('#'));
+
+	const normalizedPath = normalizePath(path);
+
+	for (const rule of rules) {
+		const normalizedRule = normalizePath(rule);
+		if (!normalizedRule) continue;
+
+		if (normalizedPath === normalizedRule || normalizedPath.startsWith(normalizedRule + '/')) {
+			return true;
+		}
+	}
+	return false;
+}
+
