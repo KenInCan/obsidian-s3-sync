@@ -1,6 +1,6 @@
 /*
-	Styles for obsidian-timestamp-helper.
+	Styles for obsidian-s3-sync.
 */
-.my-plugin-ribbon-class {
+.s3-sync-ribbon-class {
 	color: var(--text-accent);
 }
