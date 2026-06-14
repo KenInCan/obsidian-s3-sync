@@ -1,9 +1,9 @@
 import { Plugin, Notice } from 'obsidian';
-import { S3SyncSettingTab, MyPluginSettings, DEFAULT_SETTINGS } from './settings';
+import { S3SyncSettingTab, S3SyncSettings, DEFAULT_SETTINGS } from './settings';
 import { S3SyncManager, SyncDatabase } from './sync';
 
-export default class MyPlugin extends Plugin {
-	settings!: MyPluginSettings;
+export default class S3SyncPlugin extends Plugin {
+	settings!: S3SyncSettings;
 	syncDb!: SyncDatabase;
 	syncManager!: S3SyncManager;
 

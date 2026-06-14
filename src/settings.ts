@@ -1,8 +1,8 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
-import MyPlugin from './main';
+import S3SyncPlugin from './main';
 import { S3Client } from './s3';
 
-export interface MyPluginSettings {
+export interface S3SyncSettings {
 	endpointUrl: string;
 	region: string;
 	bucket: string;
@@ -18,7 +18,7 @@ export interface MyPluginSettings {
 	excludedPaths: string;
 }
 
-export const DEFAULT_SETTINGS: MyPluginSettings = {
+export const DEFAULT_SETTINGS: S3SyncSettings = {
 	endpointUrl: '',
 	region: 'us-east-1',
 	bucket: '',
@@ -35,9 +35,9 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
 };
 
 export class S3SyncSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+	plugin: S3SyncPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: S3SyncPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
