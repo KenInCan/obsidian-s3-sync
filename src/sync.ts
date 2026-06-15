@@ -31,34 +31,58 @@ export interface SyncDatabase {
 	files: Record<string, FileSyncState>;
 }
 
+export interface PendingConflict {
+	path: string;
+	localFile: TFile;
+	s3Key: string;
+	remoteData: ArrayBuffer;
+	remoteEtag: string;
+	remoteLastModified: string;
+	isText: boolean;
+	conflicts?: {
+		localLines: number[];
+		remoteLines: number[];
+	};
+}
+
+function isBlankLine(line: string): boolean {
+	if (!line) return true;
+	const trimmed = line.replace(/\r/g, '').trim();
+	return trimmed === '';
+}
+
 export class S3SyncManager {
 	private app: App;
 	private settings: SyncSettings;
 	private syncDb: SyncDatabase;
 	private saveDbCallback: (db: SyncDatabase) => Promise<void>;
 	private updateStatusCallback: (status: string) => void;
+	private onConflictsDetected?: (conflicts: PendingConflict[], isManual: boolean) => void;
 	
 	private isSyncing = false;
 	private CACHE_DIR = '.obsidian/s3-sync-cache';
+	public pendingConflicts: PendingConflict[] = [];
 
 	constructor(
 		app: App,
 		settings: SyncSettings,
 		syncDb: SyncDatabase,
 		saveDbCallback: (db: SyncDatabase) => Promise<void>,
-		updateStatusCallback: (status: string) => void
+		updateStatusCallback: (status: string) => void,
+		onConflictsDetected?: (conflicts: PendingConflict[], isManual: boolean) => void
 	) {
 		this.app = app;
 		this.settings = settings;
 		this.syncDb = syncDb;
 		this.saveDbCallback = saveDbCallback;
 		this.updateStatusCallback = updateStatusCallback;
+		this.onConflictsDetected = onConflictsDetected;
 	}
 
 	/**
 	 * Run the synchronization cycle.
 	 */
-	async sync(): Promise<void> {
+	async sync(isManual = false): Promise<void> {
 		if (this.isSyncing) {
 			console.log('S3 Sync already in progress, skipping...');
 			return;
@@ -73,6 +97,9 @@ export class S3SyncManager {
 		this.isSyncing = true;
 		this.updateStatusCallback('Syncing...');
 		new Notice('S3 Sync: Starting sync...');
+		
+		// Reset pending conflicts for this run
+		this.pendingConflicts = [];
 
 		try {
 			// 1. Derive Key if encryption is enabled
@@ -176,8 +203,8 @@ export class S3SyncManager {
 
 					if (localChanged && remoteChanged) {
 						// Conflict!
-						conflictsCount++;
-						await this.handleConflict(path, local.file, remote.key, s3Client, cryptoKey, isText, remote.etag, remote.lastModified);
+						const queued = await this.handleConflict(path, local.file, remote.key, s3Client, cryptoKey, isText, remote.etag, remote.lastModified);
+						if (queued) conflictsCount++;
 					} else if (localChanged) {
 						// Local changed only
 						uploadsCount++;
@@ -241,8 +268,8 @@ export class S3SyncManager {
 						await this.writeLocalCache(path, localData);
 					} else {
 						// Different, treat as conflict
-						conflictsCount++;
-						await this.handleConflict(path, local.file, remote.key, s3Client, cryptoKey, isText, remote.etag, remote.lastModified);
+						const queued = await this.handleConflict(path, local.file, remote.key, s3Client, cryptoKey, isText, remote.etag, remote.lastModified);
+						if (queued) conflictsCount++;
 					}
 				}
 				// Case 5: Exists in Local only
@@ -265,7 +292,11 @@ export class S3SyncManager {
 			// 7. Save updated Database
 			await this.saveDbCallback(this.syncDb);
 
-			this.updateStatusCallback('Success');
+			if (this.pendingConflicts.length > 0) {
+				this.updateStatusCallback(`Conflict (${this.pendingConflicts.length})`);
+			} else {
+				this.updateStatusCallback('Success');
+			}
 			
 			// Show summary notice
 			let summaryMsg = 'S3 Sync complete.';
@@ -276,6 +307,11 @@ export class S3SyncManager {
 			}
 			new Notice(summaryMsg);
 			console.log(summaryMsg);
+
+			// Trigger callback if conflicts are found
+			if (this.pendingConflicts.length > 0 && this.onConflictsDetected) {
+				this.onConflictsDetected(this.pendingConflicts, isManual);
+			}
 
 		} catch (error: any) {
 			console.error('S3 Sync Error:', error);
@@ -361,7 +397,8 @@ export class S3SyncManager {
 	}
 
 	/**
-	 * Handles a conflict when both local and remote files have changed.
+	 * Handles a conflict by classifying insert vs update, auto-merging inserts and queueing updates.
+	 * Returns true if the conflict was queued for manual resolution, false if auto-resolved.
 	 */
 	private async handleConflict(
 		path: string,
@@ -372,7 +409,7 @@ export class S3SyncManager {
 		isText: boolean,
 		remoteEtag: string,
 		remoteLastModified: string
-	): Promise<void> {
+	): Promise<boolean> {
 		console.log(`Conflict detected in ${path}`);
 
 		// 1. Download and decrypt remote content
@@ -411,15 +448,168 @@ export class S3SyncManager {
 
 			// Perform 3-way merge using diff3Merge
 			const mergeChunks = diff3Merge(localLines, baseLines, remoteLines);
-			let conflictDetected = false;
+			let updateConflictDetected = false;
+			let insertConflictDetected = false;
+			const localConflictLines: number[] = [];
+			const remoteConflictLines: number[] = [];
 			const mergedLines: string[] = [];
 
 			for (const chunk of mergeChunks) {
 				if ('ok' in chunk) {
 					mergedLines.push(...chunk.ok);
 				} else if ('conflict' in chunk) {
-					conflictDetected = true;
 					const c = chunk.conflict;
+					const isInsertOnly = c.o.every((line: string) => isBlankLine(line));
+
+					if (isInsertOnly) {
+						insertConflictDetected = true;
+						if (localIsEarlier) {
+							mergedLines.push(...c.a);
+							mergedLines.push(...c.b);
+						} else {
+							mergedLines.push(...c.b);
+							mergedLines.push(...c.a);
+						}
+					} else {
+						updateConflictDetected = true;
+						for (let i = 0; i < c.a.length; i++) {
+							localConflictLines.push(c.aIndex + i);
+						}
+						for (let i = 0; i < c.b.length; i++) {
+							remoteConflictLines.push(c.bIndex + i);
+						}
+					}
+				}
+			}
+
+			if (updateConflictDetected) {
+				// Queue it as an update conflict
+				console.log(`Update conflict queued for text file ${path}`);
+				this.pendingConflicts.push({
+					path,
+					localFile,
+					s3Key,
+					remoteData,
+					remoteEtag,
+					remoteLastModified,
+					isText: true,
+					conflicts: {
+						localLines: localConflictLines,
+						remoteLines: remoteConflictLines
+					}
+				});
+				return true;
+			} else {
+				// Pure insertion conflict or no conflict (or clean merge)
+				const mergedText = mergedLines.join('\n');
+				const mergedBuffer = new TextEncoder().encode(mergedText).buffer;
+
+				// Write merged file locally
+				await this.app.vault.modify(localFile, mergedText);
+
+				// Encrypt and upload merged file to S3
+				let uploadData = mergedBuffer;
+				if (this.settings.encrypt && cryptoKey) {
+					uploadData = await encryptBuffer(mergedBuffer, cryptoKey, this.settings.compress, localFile.stat.mtime);
+				}
+				const newEtag = await s3Client.putObject(s3Key, uploadData);
+
+				// Update database with merged state
+				this.syncDb.files[path] = {
+					mtime: localFile.stat.mtime,
+					etag: newEtag,
+					size: localFile.stat.size,
+				};
+
+				// Update cache
+				await this.writeLocalCache(path, mergedBuffer);
+
+				if (insertConflictDetected) {
+					new Notice(`S3 Sync: Insertions in ${localFile.name} merged automatically.`);
+					console.log(`Insertions in ${path} merged automatically.`);
+				} else {
+					console.log(`Clean auto-merge succeeded for ${path}`);
+				}
+				return false;
+			}
+		} else {
+			// Binary file: Queue it as a conflict
+			console.log(`Binary conflict queued for ${path}`);
+			this.pendingConflicts.push({
+				path,
+				localFile,
+				s3Key,
+				remoteData,
+				remoteEtag,
+				remoteLastModified,
+				isText: false
+			});
+			return true;
+		}
+	}
+
+	/**
+	 * Resolve a pending conflict with the user's choice.
+	 */
+	async resolveConflict(
+		conflict: PendingConflict,
+		choice: 'local' | 'remote' | 'merge'
+	): Promise<void> {
+		const { path, localFile, s3Key, remoteData, remoteEtag } = conflict;
+		console.log(`Resolving conflict for ${path} with choice: ${choice}`);
+
+		// Instantiate clients & key
+		const s3Client = new S3Client({
+			endpointUrl: this.settings.endpointUrl,
+			region: this.settings.region || 'us-east-1',
+			bucket: this.settings.bucket,
+			accessKeyId: this.settings.accessKeyId,
+			secretAccessKey: this.settings.secretAccessKey,
+		});
+
+		let cryptoKey: CryptoKey | null = null;
+		if (this.settings.encrypt) {
+			cryptoKey = await deriveKey(this.settings.passphrase, this.settings.bucket);
+		}
+
+		if (choice === 'local') {
+			// Keep local: upload local to S3
+			await this.uploadLocalFile(path, localFile, s3Client, cryptoKey);
+			new Notice(`Conflict resolved: Kept local version for ${localFile.name}`);
+		} else if (choice === 'remote') {
+			// Keep remote: download remote to local
+			await this.downloadRemoteFile(path, s3Key, s3Client, cryptoKey, remoteEtag);
+			new Notice(`Conflict resolved: Kept remote version for ${localFile.name}`);
+		} else if (choice === 'merge') {
+			// Merge: only applicable for text
+			if (!conflict.isText) return;
+
+			const localText = await this.app.vault.read(localFile);
+			const remoteText = new TextDecoder().decode(remoteData);
+			
+			let baseText = '';
+			const cachePath = `${this.CACHE_DIR}/${path}`;
+			if (await this.app.vault.adapter.exists(cachePath)) {
+				baseText = await this.app.vault.adapter.read(cachePath);
+			}
+
+			const localLines = localText.split('\n');
+			const remoteLines = remoteText.split('\n');
+			const baseLines = baseText.split('\n');
+
+			const localMtime = localFile.stat.mtime;
+			const remoteMtime = Date.parse(conflict.remoteLastModified);
+			const localIsEarlier = isNaN(remoteMtime) ? true : localMtime < remoteMtime;
+
+			const mergeChunks = diff3Merge(localLines, baseLines, remoteLines);
+			const mergedLines: string[] = [];
+
+			for (const chunk of mergeChunks) {
+				if ('ok' in chunk) {
+					mergedLines.push(...chunk.ok);
+				} else if ('conflict' in chunk) {
+					const c = chunk.conflict;
+					// Force stack both versions (since user chose to merge)
 					if (localIsEarlier) {
 						mergedLines.push(...c.a);
 						mergedLines.push(...c.b);
@@ -433,17 +623,17 @@ export class S3SyncManager {
 			const mergedText = mergedLines.join('\n');
 			const mergedBuffer = new TextEncoder().encode(mergedText).buffer;
 
-			// Write merged file locally
+			// Write merged locally
 			await this.app.vault.modify(localFile, mergedText);
 
-			// Encrypt and upload merged file to S3
+			// Upload to S3
 			let uploadData = mergedBuffer;
 			if (this.settings.encrypt && cryptoKey) {
 				uploadData = await encryptBuffer(mergedBuffer, cryptoKey, this.settings.compress, localFile.stat.mtime);
 			}
 			const newEtag = await s3Client.putObject(s3Key, uploadData);
 
-			// Update database with merged state
+			// Update db
 			this.syncDb.files[path] = {
 				mtime: localFile.stat.mtime,
 				etag: newEtag,
@@ -453,61 +643,23 @@ export class S3SyncManager {
 			// Update cache
 			await this.writeLocalCache(path, mergedBuffer);
 
-			if (conflictDetected) {
-				new Notice(`S3 Sync: Overlapping changes in ${localFile.name} merged automatically.`);
-				console.log(`Overlapping changes in ${path} merged automatically.`);
-			} else {
-				console.log(`Clean auto-merge succeeded for ${path}`);
-			}
+			new Notice(`Conflict resolved: Merged both versions for ${localFile.name}`);
+		}
 
+		// Remove from pending list in-place
+		const conflictIdx = this.pendingConflicts.findIndex(c => c.path === path);
+		if (conflictIdx !== -1) {
+			this.pendingConflicts.splice(conflictIdx, 1);
+		}
+
+		// Save updated db
+		await this.saveDbCallback(this.syncDb);
+
+		// Update status bar depending on remaining conflicts
+		if (this.pendingConflicts.length > 0) {
+			this.updateStatusCallback(`Conflict (${this.pendingConflicts.length})`);
 		} else {
-			// Binary file: Rename local, download remote, upload conflict copy
-			const timestamp = new Date().toISOString().replace(/[:-]/g, '').split('.')[0];
-			const extIdx = path.lastIndexOf('.');
-			const basePathWithoutExt = extIdx !== -1 ? path.substring(0, extIdx) : path;
-			const ext = extIdx !== -1 ? path.substring(extIdx) : '';
-			
-			const cleanDeviceName = this.settings.deviceName.replace(/[^a-zA-Z0-9_-]/g, '');
-			const conflictPath = `${basePathWithoutExt}.sync-conflict-${timestamp}-${cleanDeviceName}${ext}`;
-
-			console.log(`Binary conflict: Renaming local to ${conflictPath}`);
-
-			// 1. Save local content as conflict copy
-			const localData = await this.app.vault.readBinary(localFile);
-			await this.ensureLocalFoldersExist(conflictPath);
-			await this.app.vault.createBinary(conflictPath, localData);
-
-			// 2. Upload conflict copy to S3
-			const conflictS3Key = await this.getS3Key(conflictPath, cryptoKey);
-			let conflictUploadData = localData;
-			if (this.settings.encrypt && cryptoKey) {
-				conflictUploadData = await encryptBuffer(localData, cryptoKey, this.settings.compress, localFile.stat.mtime);
-			}
-			const conflictEtag = await s3Client.putObject(conflictS3Key, conflictUploadData);
-
-			// 3. Overwrite local original file with remote content
-			await this.app.vault.modifyBinary(localFile, remoteData);
-
-			// 4. Update DB for conflict file
-			const localConflictFile = this.app.vault.getAbstractFileByPath(conflictPath) as TFile;
-			this.syncDb.files[conflictPath] = {
-				mtime: localConflictFile.stat.mtime,
-				etag: conflictEtag,
-				size: localConflictFile.stat.size,
-			};
-
-			// 5. Update DB for original file
-			this.syncDb.files[path] = {
-				mtime: localFile.stat.mtime,
-				etag: remoteEtag,
-				size: localFile.stat.size,
-			};
-
-			// Write caches
-			await this.writeLocalCache(conflictPath, localData);
-			await this.writeLocalCache(path, remoteData);
-
-			new Notice(`S3 Sync: Binary conflict. Saved local copy as ${localConflictFile.name}`);
+			this.updateStatusCallback('Success');
 		}
 	}
 
@@ -585,3 +737,4 @@ export class S3SyncManager {
 		return pathToS3Key(path, this.settings.prefix);
 	}
 }
+
