@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-15
+
+### Added
+- **Side-by-Side Conflict Resolution Modal**: Created a dual-card comparison modal for resolving update conflicts, rendering local and remote file states side-by-side with color-coded line-by-line highlighting.
+- **Fuzzy Sync Conflict Suggester**: Clicking the status bar badge or using the Command Palette action now displays a fuzzy suggest modal allowing the user to select and resolve pending file conflicts.
+- **Selective Auto-Merge for Insertions**: Implemented chronological auto-merging for new added lines that did not exist in the ancestor file, while queueing actual file updates for user decision.
+- **Node 22.x CI Build Fix**: Migrated from `eslint.config.mts` to `eslint.config.mjs` to resolve Jiti type loader bugs on Node 22.x environments.
+
+### Fixed
+- **Obsidian API & Guidelines Alignment**: Aligned UI commands to sentence case, adjusted timer logic to window-scoped context, and replaced deprecated button methods.
+- **Clean Linter State**: Resolved all TypeScript unused catch variable and ESLint warnings.
+
+---
+
+## [0.2.3] - 2026-06-14
+
+### Changed
+- **Config Renaming**: Cleaned up internal configuration keys and bumped plugin properties.
+
+---
+
+## [0.2.2] - 2026-06-14
+
+### Added
+- **Path Exclusion Filtering**: Added settings and filters to exclude specific folders, paths, or file extensions from S3 syncing.
+
+---
+
 ## [0.2.1] - 2026-06-13
 
 ### Added
