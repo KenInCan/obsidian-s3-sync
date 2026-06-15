@@ -10,8 +10,8 @@ A robust, self-contained S3 synchronization plugin for Obsidian. Sync your vault
 - **Zero-Knowledge Encryption**: All file contents are compressed and encrypted locally using **AES-GCM-256** (Web Crypto API) before upload. Your passphrase never leaves your device.
 - **File Name (Key) Obfuscation**: Folder structures and filenames are cryptographically obfuscated on S3 using deterministic AES-GCM encryption, preventing metadata leaks.
 - **Native Gzip Compression**: Pre-compresses text files using `CompressionStream` to reduce upload sizes by **60% to 80%** and speed up transfers.
-- **Chronological 3-Way Auto-Merge**: Overlapping text line edits are automatically resolved in order of execution (older changes on top, newer changes appended below) without injecting messy conflict markers.
-- **Binary Conflict Protection**: Conflicting binary files (images, PDFs, etc.) are safely renamed with a device-specific timestamp suffix to prevent data loss.
+- **Chronological 3-Way Auto-Merge**: Overlapping text line insertions are automatically merged in chronological order without prompting.
+- **Interactive Conflict Resolution UI**: When conflicting updates occur on existing lines (or on binary files), sync pauses for those files and prompts the user with a premium side-by-side modal to select which version to keep.
 - **Automatic Syncing**: Customizable periodic sync intervals and sync-on-startup support.
 
 ---
@@ -97,8 +97,8 @@ Compression (Gzip Stream) ──► Encryption (AES-GCM-256) ──► Path Obfu
 | **No** | **No** | Any | Do nothing. |
 | **Yes** | **No** | Any | **Compress, Encrypt & Upload** local version. |
 | **No** | **Yes** | Any | **Download, Decrypt & Decompress** to local vault. |
-| **Yes** | **Yes** | **Binary** | **Rename local copy** with timestamp/device suffix, then download remote version. |
-| **Yes** | **Yes** | **Text** | **Markerless Auto-Merge**: Join overlapping lines placing earlier edit on top, upload merged file. |
+| **Yes** | **Yes** | **Binary** | **Interactive Prompt**: Prompt the user to select which file (local or remote) to keep. |
+| **Yes** | **Yes** | **Text** | **Selective Resolution**: Auto-merge insertions. If updates overlap on existing text, prompt the user via modal to choose local, remote, or merge. |
 | **Deleted** | **No** | Any | **Delete Remote**: Remove S3 object. |
 | **No** | **Deleted** | Any | **Delete Local**: Remove file from vault. |
 | **Deleted** | **Yes** | Any | **Re-download**: Recreate local file from remote (remote changes win). |
