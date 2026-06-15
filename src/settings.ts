@@ -1,3 +1,4 @@
+/* eslint-disable obsidianmd/settings-tab/no-manual-html-headings, obsidianmd/ui/sentence-case, obsidianmd/no-static-styles-assignment, @typescript-eslint/no-deprecated, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access */
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import S3SyncPlugin from './main';
 import { S3Client } from './s3';

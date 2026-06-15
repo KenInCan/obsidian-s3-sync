@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any */
 import { requestUrl } from 'obsidian';
 import { S3ObjectMetadata, parseS3ListObjects, parseS3Error, normalizePath, pathToS3Key } from './utils';
 

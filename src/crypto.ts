@@ -129,7 +129,7 @@ export async function decryptBuffer(
 			key,
 			ciphertext.buffer
 		);
-	} catch (err) {
+	} catch {
 		throw new Error('Decryption failed. Please check if your Encryption Passphrase is correct.');
 	}
 

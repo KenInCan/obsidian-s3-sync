@@ -88,7 +88,7 @@ export function parseS3Error(xmlString: string): { code: string; message: string
 		const code = xmlDoc.getElementsByTagName('Code')[0]?.textContent || 'UnknownError';
 		const message = xmlDoc.getElementsByTagName('Message')[0]?.textContent || 'An unknown S3 error occurred';
 		return { code, message };
-	} catch (e) {
+	} catch {
 		return { code: 'UnknownError', message: xmlString };
 	}
 }
