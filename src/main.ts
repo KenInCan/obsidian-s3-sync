@@ -1,6 +1,7 @@
 import { Plugin, Notice } from 'obsidian';
 import { S3SyncSettingTab, S3SyncSettings, DEFAULT_SETTINGS } from './settings';
 import { S3SyncManager, SyncDatabase } from './sync';
+import { ConflictListSuggestModal } from './ui/conflict-modal';
 
 export default class S3SyncPlugin extends Plugin {
 	settings!: S3SyncSettings;
@@ -25,6 +26,13 @@ export default class S3SyncPlugin extends Plugin {
 		// 3. Create status bar item
 		this.statusBarItemEl = this.addStatusBarItem();
 		this.updateStatusBar('Idle');
+		this.registerDomEvent(this.statusBarItemEl, 'click', () => {
+			if (this.syncManager.pendingConflicts.length > 0) {
+				new ConflictListSuggestModal(this.app, this.syncManager.pendingConflicts, async (conflict, choice) => {
+					await this.syncManager.resolveConflict(conflict, choice);
+				}).open();
+			}
+		});
 
 		// 4. Initialize Sync Manager
 		this.syncManager = new S3SyncManager(
@@ -35,22 +43,48 @@ export default class S3SyncPlugin extends Plugin {
 				this.syncDb = updatedDb;
 				await this.savePluginData();
 			},
-			(status) => this.updateStatusBar(status)
+			(status) => this.updateStatusBar(status),
+			(conflicts, isManual) => {
+				if (isManual) {
+					new ConflictListSuggestModal(this.app, conflicts, async (conflict, choice) => {
+						await this.syncManager.resolveConflict(conflict, choice);
+					}).open();
+				} else {
+					new Notice(`S3 Sync: ${conflicts.length} conflict(s) detected. Click the status bar to resolve.`);
+				}
+			}
 		);
 
 		// 5. Add Ribbon Icon for manual trigger
 		const ribbonIconEl = this.addRibbonIcon('cloud-lightning', 'Sync with S3', async (evt: MouseEvent) => {
-			await this.syncManager.sync();
+			await this.syncManager.sync(true);
 		});
 		ribbonIconEl.addClass('s3-sync-ribbon-class');
 
-		// 6. Add Command Palette Command
+		// 6. Add Command Palette Commands
 		this.addCommand({
 			id: 's3-sync-now',
 			name: 'Sync now with S3',
 			callback: async () => {
-				await this.syncManager.sync();
+				await this.syncManager.sync(true);
 			},
+		});
+
+		this.addCommand({
+			id: 's3-sync-resolve-conflicts',
+			name: 'Resolve S3 Sync conflicts',
+			checkCallback: (checking: boolean): boolean => {
+				const hasConflicts = this.syncManager && this.syncManager.pendingConflicts.length > 0;
+				if (checking) {
+					return hasConflicts;
+				}
+				if (hasConflicts) {
+					new ConflictListSuggestModal(this.app, this.syncManager.pendingConflicts, async (conflict, choice) => {
+						await this.syncManager.resolveConflict(conflict, choice);
+					}).open();
+				}
+				return true;
+			}
 		});
 
 		// 7. Add Settings Tab
