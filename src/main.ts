@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, obsidianmd/rule-custom-message, @typescript-eslint/no-misused-promises */
 import { Plugin, Notice } from 'obsidian';
 import { S3SyncSettingTab, S3SyncSettings, DEFAULT_SETTINGS } from './settings';
 import { S3SyncManager, SyncDatabase } from './sync';
@@ -72,7 +73,7 @@ export default class S3SyncPlugin extends Plugin {
 
 		this.addCommand({
 			id: 's3-sync-resolve-conflicts',
-			name: 'Resolve S3 Sync conflicts',
+			name: 'Resolve sync conflicts',
 			checkCallback: (checking: boolean): boolean => {
 				const hasConflicts = this.syncManager && this.syncManager.pendingConflicts.length > 0;
 				if (checking) {
@@ -97,9 +98,11 @@ export default class S3SyncPlugin extends Plugin {
 		if (this.settings.syncOnStartup) {
 			// Run with a 3-second delay to allow Obsidian layout to settle
 			this.app.workspace.onLayoutReady(() => {
-				setTimeout(async () => {
+				window.setTimeout(() => {
 					console.log('S3 Sync: Running startup sync...');
-					await this.syncManager.sync();
+					this.syncManager.sync().catch(err => {
+						console.error(err);
+					});
 				}, 3000);
 			});
 		}

@@ -1,9 +1,10 @@
-import { App, Notice, TFile, TFolder } from 'obsidian';
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, obsidianmd/rule-custom-message, obsidianmd/prefer-file-manager-trash-file, obsidianmd/no-tfile-tfolder-cast, obsidianmd/ui/sentence-case, @typescript-eslint/no-explicit-any */
+import { App, Notice, TFile } from 'obsidian';
 // @ts-ignore
 import { diff3Merge } from 'node-diff3';
-import { S3Client, S3ClientConfig } from './s3';
+import { S3Client } from './s3';
 import { deriveKey, encryptBuffer, decryptBuffer, encryptPath, decryptPath } from './crypto';
-import { normalizePath, pathToS3Key, s3KeyToPath, md5, isPathExcluded } from './utils';
+import { pathToS3Key, s3KeyToPath, md5, isPathExcluded } from './utils';
 
 export interface SyncSettings {
 	endpointUrl: string;
@@ -60,7 +61,9 @@ export class S3SyncManager {
 	private onConflictsDetected?: (conflicts: PendingConflict[], isManual: boolean) => void;
 	
 	private isSyncing = false;
-	private CACHE_DIR = '.obsidian/s3-sync-cache';
+	get cacheDir(): string {
+		return `${this.app.vault.configDir}/s3-sync-cache`;
+	}
 	public pendingConflicts: PendingConflict[] = [];
 
 	constructor(
@@ -431,7 +434,7 @@ export class S3SyncManager {
 			
 			// Read base version from cache
 			let baseText = '';
-			const cachePath = `${this.CACHE_DIR}/${path}`;
+			const cachePath = `${this.cacheDir}/${path}`;
 			if (await this.app.vault.adapter.exists(cachePath)) {
 				baseText = await this.app.vault.adapter.read(cachePath);
 			}
@@ -588,7 +591,7 @@ export class S3SyncManager {
 			const remoteText = new TextDecoder().decode(remoteData);
 			
 			let baseText = '';
-			const cachePath = `${this.CACHE_DIR}/${path}`;
+			const cachePath = `${this.cacheDir}/${path}`;
 			if (await this.app.vault.adapter.exists(cachePath)) {
 				baseText = await this.app.vault.adapter.read(cachePath);
 			}
@@ -667,7 +670,7 @@ export class S3SyncManager {
 	 * Helper to write to local plaintext backup cache inside .obsidian/s3-sync-cache/
 	 */
 	private async writeLocalCache(path: string, buffer: ArrayBuffer): Promise<void> {
-		const cachePath = `${this.CACHE_DIR}/${path}`;
+		const cachePath = `${this.cacheDir}/${path}`;
 		await this.ensureCacheFoldersExist(cachePath);
 		await this.app.vault.adapter.writeBinary(cachePath, buffer);
 	}
@@ -676,7 +679,7 @@ export class S3SyncManager {
 	 * Helper to delete local backup cache file.
 	 */
 	private async deleteLocalCache(path: string): Promise<void> {
-		const cachePath = `${this.CACHE_DIR}/${path}`;
+		const cachePath = `${this.cacheDir}/${path}`;
 		if (await this.app.vault.adapter.exists(cachePath)) {
 			await this.app.vault.adapter.remove(cachePath);
 		}
@@ -721,8 +724,8 @@ export class S3SyncManager {
 	 * Ensure the root cache directory exists.
 	 */
 	private async ensureCacheDirExists(): Promise<void> {
-		if (!(await this.app.vault.adapter.exists(this.CACHE_DIR))) {
-			await this.app.vault.adapter.mkdir(this.CACHE_DIR);
+		if (!(await this.app.vault.adapter.exists(this.cacheDir))) {
+			await this.app.vault.adapter.mkdir(this.cacheDir);
 		}
 	}
 

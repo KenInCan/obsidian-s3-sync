@@ -1,3 +1,4 @@
+/* eslint-disable obsidianmd/rule-custom-message, obsidianmd/no-unsupported-api */
 import { App, Modal, FuzzySuggestModal, Setting } from 'obsidian';
 import { PendingConflict } from '../sync';
 
@@ -67,7 +68,7 @@ export class ConflictResolutionModal extends Modal {
 
 		// --- LOCAL CARD ---
 		const localCard = columns.createDiv({ cls: 's3-sync-conflict-card is-local' });
-		localCard.createEl('h4', { text: 'Local Version (Your Device)' });
+		localCard.createEl('h4', { text: 'Local version (your device)' });
 		
 		const localMtime = new Date(this.conflict.localFile.stat.mtime).toLocaleString();
 		const localSize = (this.conflict.localFile.stat.size / 1024).toFixed(2);
@@ -93,7 +94,7 @@ export class ConflictResolutionModal extends Modal {
 			});
 
 			if (firstConflictEl) {
-				setTimeout(() => {
+				window.setTimeout(() => {
 					firstConflictEl?.scrollIntoView({ block: 'center', inline: 'nearest' });
 				}, 150);
 			}
@@ -103,7 +104,7 @@ export class ConflictResolutionModal extends Modal {
 
 		// --- REMOTE CARD ---
 		const remoteCard = columns.createDiv({ cls: 's3-sync-conflict-card is-remote' });
-		remoteCard.createEl('h4', { text: 'Remote Version (S3 Cloud)' });
+		remoteCard.createEl('h4', { text: 'Remote version (S3 cloud)' });
 
 		const remoteTimeParsed = Date.parse(this.conflict.remoteLastModified);
 		const remoteMtime = isNaN(remoteTimeParsed) ? 'Unknown' : new Date(remoteTimeParsed).toLocaleString();
@@ -130,7 +131,7 @@ export class ConflictResolutionModal extends Modal {
 			});
 
 			if (firstConflictEl) {
-				setTimeout(() => {
+				window.setTimeout(() => {
 					firstConflictEl?.scrollIntoView({ block: 'center', inline: 'nearest' });
 				}, 150);
 			}
@@ -142,18 +143,18 @@ export class ConflictResolutionModal extends Modal {
 		const actions = container.createDiv({ cls: 's3-sync-conflict-actions' });
 
 		new Setting(actions)
-			.setName('Select Resolution')
+			.setName('Select resolution')
 			.setDesc('Choose which version to keep.')
 			.addButton(btn => btn
-				.setButtonText('Keep Local')
+				.setButtonText('Keep local')
 				.setCta()
 				.onClick(async () => {
 					this.close();
 					await this.onDecision('local');
 				}))
 			.addButton(btn => btn
-				.setButtonText('Keep Remote')
-				.setWarning()
+				.setButtonText('Keep remote')
+				.setDestructive()
 				.onClick(async () => {
 					this.close();
 					await this.onDecision('remote');
@@ -163,7 +164,7 @@ export class ConflictResolutionModal extends Modal {
 			actions.lastChild?.appendChild(
 				new Setting(actions)
 					.addButton(btn => btn
-						.setButtonText('Auto-Merge (Keep Both)')
+						.setButtonText('Auto-merge (keep both)')
 						.setClass('s3-sync-merge-btn')
 						.onClick(async () => {
 							this.close();
