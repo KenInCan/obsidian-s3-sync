@@ -17,6 +17,7 @@ export default class S3SyncPlugin extends Plugin {
 	statusIndicatorManager!: SyncStatusIndicatorManager;
 	private autoSyncIntervalId: number | null = null;
 	private lastSyncTime: string | null = null;
+	private debouncedSyncTimer: number | null = null;
 
 	async onload() {
 		// 1. Load configuration and state
@@ -70,11 +71,21 @@ export default class S3SyncPlugin extends Plugin {
 		});
 		this.updateStatusBar('Idle');
 
-		// Register workspace listeners for the status indicator
+		// Register workspace listeners for the status indicator and auto-sync triggers
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', () => {
 				if (this.statusIndicatorManager) {
 					this.statusIndicatorManager.updateAllIndicators();
+				}
+				if (this.settings.syncOnTabSwitch) {
+					this.triggerDebouncedSync();
+				}
+			})
+		);
+		this.registerEvent(
+			this.app.workspace.on('file-open', (file) => {
+				if (file && this.settings.syncOnFileOpen) {
+					this.triggerDebouncedSync();
 				}
 			})
 		);
@@ -154,9 +165,25 @@ export default class S3SyncPlugin extends Plugin {
 	onunload() {
 		console.log('Unloading S3 Sync plugin...');
 		this.clearAutoSync();
+		if (this.debouncedSyncTimer !== null) {
+			window.clearTimeout(this.debouncedSyncTimer);
+			this.debouncedSyncTimer = null;
+		}
 		if (this.statusIndicatorManager) {
 			this.statusIndicatorManager.destroy();
 		}
+	}
+
+	triggerDebouncedSync() {
+		if (this.debouncedSyncTimer !== null) {
+			window.clearTimeout(this.debouncedSyncTimer);
+		}
+		this.debouncedSyncTimer = window.setTimeout(async () => {
+			this.debouncedSyncTimer = null;
+			if (this.syncManager) {
+				await this.syncManager.sync();
+			}
+		}, 1000);
 	}
 
 	/**

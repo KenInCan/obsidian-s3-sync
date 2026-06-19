@@ -16,6 +16,8 @@ export interface S3SyncSettings {
 	compress: boolean;
 	autoSyncInterval: number; // In minutes, 0 means disabled
 	syncOnStartup: boolean;
+	syncOnFileOpen: boolean;
+	syncOnTabSwitch: boolean;
 	excludedPaths: string;
 }
 
@@ -32,6 +34,8 @@ export const DEFAULT_SETTINGS: S3SyncSettings = {
 	compress: true,
 	autoSyncInterval: 0,
 	syncOnStartup: false,
+	syncOnFileOpen: false,
+	syncOnTabSwitch: false,
 	excludedPaths: ''
 };
 
@@ -176,6 +180,26 @@ export class S3SyncSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.syncOnStartup)
 				.onChange(async (value) => {
 					this.plugin.settings.syncOnStartup = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Sync on file open')
+			.setDesc('Automatically trigger a sync when a note or file is opened.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.syncOnFileOpen)
+				.onChange(async (value) => {
+					this.plugin.settings.syncOnFileOpen = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Sync on tab switch')
+			.setDesc('Automatically trigger a sync when switching editor tabs.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.syncOnTabSwitch)
+				.onChange(async (value) => {
+					this.plugin.settings.syncOnTabSwitch = value;
 					await this.plugin.saveSettings();
 				}));
 

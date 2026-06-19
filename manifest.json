@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-s3-sync",
 	"name": "S3 Sync",
-	"version": "0.4.0",
+	"version": "0.5.0",
 	"minAppVersion": "1.7.2",
 	"description": "Sync Obsidian vault with AWS S3 or any compatible storage (Cloudflare R2, MinIO, B2) with client-side encryption and auto-merging.",
 	"author": "KenInCan",

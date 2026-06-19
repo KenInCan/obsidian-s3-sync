@@ -20,6 +20,8 @@ export interface SyncSettings {
 	compress: boolean;
 	autoSyncInterval: number;
 	syncOnStartup: boolean;
+	syncOnFileOpen: boolean;
+	syncOnTabSwitch: boolean;
 	excludedPaths: string;
 }
 
