@@ -22,6 +22,7 @@ export interface SyncSettings {
 	syncOnStartup: boolean;
 	syncOnFileOpen: boolean;
 	syncOnTabSwitch: boolean;
+	conflictStrategy: 'ask' | 'local' | 'remote';
 	excludedPaths: string;
 }
 
@@ -485,6 +486,16 @@ export class S3SyncManager {
 		remoteEtag: string,
 		remoteLastModified: string
 	): Promise<boolean> {
+		if (this.settings.conflictStrategy === 'local') {
+			this.logStream.log('info', `Conflict resolution strategy is 'Keep local', auto-resolving ${path}`);
+			await this.uploadLocalFile(path, localFile, s3Client, cryptoKey);
+			return false;
+		} else if (this.settings.conflictStrategy === 'remote') {
+			this.logStream.log('info', `Conflict resolution strategy is 'Keep remote', auto-resolving ${path}`);
+			await this.downloadRemoteFile(path, s3Key, s3Client, cryptoKey, remoteEtag);
+			return false;
+		}
+
 		console.log(`Conflict detected in ${path}`);
 
 		// 1. Download and decrypt remote content
@@ -628,7 +639,8 @@ export class S3SyncManager {
 	 */
 	async resolveConflict(
 		conflict: PendingConflict,
-		choice: 'local' | 'remote' | 'merge'
+		choice: 'local' | 'remote' | 'merge',
+		mergedText?: string
 	): Promise<void> {
 		const { path, localFile, s3Key, remoteData, remoteEtag } = conflict;
 		this.logStream.log('info', `Resolving conflict for ${path} using choice: ${choice}`);
@@ -662,60 +674,66 @@ export class S3SyncManager {
 				// Merge: only applicable for text
 				if (!conflict.isText) return;
 
-				const localText = await this.app.vault.read(localFile);
-				const remoteText = new TextDecoder().decode(remoteData);
-				
-				let baseText = '';
-				const cachePath = `${this.cacheDir}/${path}`;
-				if (await this.app.vault.adapter.exists(cachePath)) {
-					baseText = await this.app.vault.adapter.read(cachePath);
-				}
+				let finalMergedText = mergedText;
+				if (finalMergedText === undefined) {
+					const localText = await this.app.vault.read(localFile);
+					const remoteText = new TextDecoder().decode(remoteData);
+					
+					let baseText = '';
+					const cachePath = `${this.cacheDir}/${path}`;
+					if (await this.app.vault.adapter.exists(cachePath)) {
+						baseText = await this.app.vault.adapter.read(cachePath);
+					}
 
-				const localLines = localText.split('\n');
-				const remoteLines = remoteText.split('\n');
-				const baseLines = baseText.split('\n');
+					const localLines = localText.split('\n');
+					const remoteLines = remoteText.split('\n');
+					const baseLines = baseText.split('\n');
 
-				const localMtime = localFile.stat.mtime;
-				const remoteMtime = Date.parse(conflict.remoteLastModified);
-				const localIsEarlier = isNaN(remoteMtime) ? true : localMtime < remoteMtime;
+					const localMtime = localFile.stat.mtime;
+					const remoteMtime = Date.parse(conflict.remoteLastModified);
+					const localIsEarlier = isNaN(remoteMtime) ? true : localMtime < remoteMtime;
 
-				const mergeChunks = diff3Merge(localLines, baseLines, remoteLines);
-				const mergedLines: string[] = [];
+					const mergeChunks = diff3Merge(localLines, baseLines, remoteLines);
+					const mergedLines: string[] = [];
 
-				for (const chunk of mergeChunks) {
-					if ('ok' in chunk) {
-						mergedLines.push(...chunk.ok);
-					} else if ('conflict' in chunk) {
-						const c = chunk.conflict;
-						// Force stack both versions (since user chose to merge)
-						if (localIsEarlier) {
-							mergedLines.push(...c.a);
-							mergedLines.push(...c.b);
-						} else {
-							mergedLines.push(...c.b);
-							mergedLines.push(...c.a);
+					for (const chunk of mergeChunks) {
+						if ('ok' in chunk) {
+							mergedLines.push(...chunk.ok);
+						} else if ('conflict' in chunk) {
+							const c = chunk.conflict;
+							// Force stack both versions (since user chose to merge)
+							if (localIsEarlier) {
+								mergedLines.push(...c.a);
+								mergedLines.push(...c.b);
+							} else {
+								mergedLines.push(...c.b);
+								mergedLines.push(...c.a);
+							}
 						}
 					}
+					finalMergedText = mergedLines.join('\n');
 				}
 
-				const mergedText = mergedLines.join('\n');
-				const mergedBuffer = new TextEncoder().encode(mergedText).buffer;
+				const mergedBuffer = new TextEncoder().encode(finalMergedText).buffer;
 
 				// Write merged locally
-				await this.app.vault.modify(localFile, mergedText);
+				await this.app.vault.modify(localFile, finalMergedText);
+
+				// Get the updated file reference to retrieve the new mtime and size from the vault
+				const updatedLocalFile = this.app.vault.getAbstractFileByPath(path) as TFile;
 
 				// Upload to S3
 				let uploadData = mergedBuffer;
 				if (this.settings.encrypt && cryptoKey) {
-					uploadData = await encryptBuffer(mergedBuffer, cryptoKey, this.settings.compress, localFile.stat.mtime);
+					uploadData = await encryptBuffer(mergedBuffer, cryptoKey, this.settings.compress, updatedLocalFile.stat.mtime);
 				}
 				const newEtag = await s3Client.putObject(s3Key, uploadData);
 
 				// Update db
 				this.syncDb.files[path] = {
-					mtime: localFile.stat.mtime,
+					mtime: updatedLocalFile.stat.mtime,
 					etag: newEtag,
-					size: localFile.stat.size,
+					size: updatedLocalFile.stat.size,
 				};
 
 				// Update cache

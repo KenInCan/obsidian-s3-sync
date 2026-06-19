@@ -5,7 +5,7 @@ import { PendingConflict } from '../sync';
 
 export interface StatusIndicatorDelegate {
 	getPendingConflicts(): PendingConflict[];
-	resolveConflict(conflict: PendingConflict, choice: 'local' | 'remote' | 'merge'): Promise<void>;
+	resolveConflict(conflict: PendingConflict, choice: 'local' | 'remote' | 'merge', mergedText?: string): Promise<void>;
 	isPathExcluded(path: string): boolean;
 }
 
@@ -116,8 +116,8 @@ export class SyncStatusIndicatorManager {
 			htmlWidget.onclick = () => {
 				const currentConflicts = this.delegate.getPendingConflicts();
 				if (currentConflicts.length > 0) {
-					new ConflictListSuggestModal(this.app, currentConflicts, async (conflict, choice) => {
-						await this.delegate.resolveConflict(conflict, choice);
+					new ConflictListSuggestModal(this.app, currentConflicts, async (conflict, choice, mergedText) => {
+						await this.delegate.resolveConflict(conflict, choice, mergedText);
 					}).open();
 				}
 			};

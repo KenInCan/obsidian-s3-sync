@@ -18,6 +18,7 @@ export interface S3SyncSettings {
 	syncOnStartup: boolean;
 	syncOnFileOpen: boolean;
 	syncOnTabSwitch: boolean;
+	conflictStrategy: 'ask' | 'local' | 'remote';
 	excludedPaths: string;
 }
 
@@ -36,6 +37,7 @@ export const DEFAULT_SETTINGS: S3SyncSettings = {
 	syncOnStartup: false,
 	syncOnFileOpen: false,
 	syncOnTabSwitch: false,
+	conflictStrategy: 'ask',
 	excludedPaths: ''
 };
 
@@ -217,6 +219,19 @@ export class S3SyncSettingTab extends PluginSettingTab {
 					this.plugin.settings.autoSyncInterval = parseInt(value, 10);
 					await this.plugin.saveSettings();
 					this.plugin.setupAutoSync(); // Reschedule auto sync
+				}));
+
+		new Setting(containerEl)
+			.setName('Conflict resolution strategy')
+			.setDesc('Choose how to resolve conflicts when a file is modified both locally and remotely.')
+			.addDropdown(dropdown => dropdown
+				.addOption('ask', 'Ask user')
+				.addOption('local', 'Keep local')
+				.addOption('remote', 'Keep remote')
+				.setValue(this.plugin.settings.conflictStrategy)
+				.onChange(async (value) => {
+					this.plugin.settings.conflictStrategy = value as 'ask' | 'local' | 'remote';
+					await this.plugin.saveSettings();
 				}));
 
 		new Setting(containerEl)

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-06-19
+
+### Added
+- **Interactive Line-by-Line Merge**: Allows users to select and resolve individual line slots within overlapping conflict blocks using side-by-side aligned card displays (padded with visual placeholders for unequal diffs).
+- **Bulk Selection Baseline**: Clicking "Keep local" or "Keep remote" on text conflicts now pre-selects all slots accordingly to serve as a baseline, allowing you to fine-tune selections line-by-line before confirming.
+- **Card-Level Action Buttons**: Positioned "Keep local" and "Keep remote" buttons directly inside their respective local/remote cards for intuitive alignment.
+- **Sleek Footer Layout**: Centered the "Confirm" and "Skip" buttons in the footer with increased spacing.
+
+### Fixed
+- **Conflict Suggestion Loops**: Fixed a database out-of-sync bug by querying post-modify file metadata from the vault after a merge, preventing resolved files from immediately re-conflicting.
+- **Parameter Pass-through**: Restored custom merged text forwarding by plumbing the third `mergedText` argument through suggest modal and sync manager resolve callbacks.
+- **UI Position Conflict**: Moved the editor status indicator widget down to `top: 50px` to clear Obsidian's reading/editing view switcher, and offset notice popups to `top: 140px` to match.
+- **Strict TypeScript Build**: Resolved strict-mode type casting compiler errors and cleaned up unused imports.
+
+---
+
 ## [0.5.0] - 2026-06-19
 
 ### Added

@@ -51,8 +51,8 @@ export default class S3SyncPlugin extends Plugin {
 			(status) => this.updateStatusBar(status),
 			(conflicts, isManual) => {
 				if (isManual) {
-					new ConflictListSuggestModal(this.app, conflicts, async (conflict, choice) => {
-						await this.syncManager.resolveConflict(conflict, choice);
+					new ConflictListSuggestModal(this.app, conflicts, async (conflict, choice, mergedText) => {
+						await this.syncManager.resolveConflict(conflict, choice, mergedText);
 					}).open();
 				} else {
 					new Notice(`S3 Sync: ${conflicts.length} conflict(s) detected. Click the top-right status indicator to resolve.`);
@@ -64,8 +64,8 @@ export default class S3SyncPlugin extends Plugin {
 		// 3. Initialize Status Indicator Manager (Top Right)
 		this.statusIndicatorManager = new SyncStatusIndicatorManager(this.app, this.logStream, {
 			getPendingConflicts: () => this.syncManager ? this.syncManager.pendingConflicts : [],
-			resolveConflict: async (conflict, choice) => {
-				await this.syncManager.resolveConflict(conflict, choice);
+			resolveConflict: async (conflict, choice, mergedText) => {
+				await this.syncManager.resolveConflict(conflict, choice, mergedText);
 			},
 			isPathExcluded: (path) => isPathExcluded(path, this.settings.excludedPaths)
 		});
@@ -134,8 +134,8 @@ export default class S3SyncPlugin extends Plugin {
 					return hasConflicts;
 				}
 				if (hasConflicts) {
-					new ConflictListSuggestModal(this.app, this.syncManager.pendingConflicts, async (conflict, choice) => {
-						await this.syncManager.resolveConflict(conflict, choice);
+					new ConflictListSuggestModal(this.app, this.syncManager.pendingConflicts, async (conflict, choice, mergedText) => {
+						await this.syncManager.resolveConflict(conflict, choice, mergedText);
 					}).open();
 				}
 				return true;
