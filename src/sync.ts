@@ -5,6 +5,7 @@ import { diff3Merge } from 'node-diff3';
 import { S3Client } from './s3';
 import { deriveKey, encryptBuffer, decryptBuffer, encryptPath, decryptPath } from './crypto';
 import { pathToS3Key, s3KeyToPath, md5, isPathExcluded } from './utils';
+import { SyncLogStream } from './utils/logger';
 
 export interface SyncSettings {
 	endpointUrl: string;
@@ -59,6 +60,7 @@ export class S3SyncManager {
 	private saveDbCallback: (db: SyncDatabase) => Promise<void>;
 	private updateStatusCallback: (status: string) => void;
 	private onConflictsDetected?: (conflicts: PendingConflict[], isManual: boolean) => void;
+	private logStream: SyncLogStream;
 	
 	private isSyncing = false;
 	get cacheDir(): string {
@@ -72,7 +74,8 @@ export class S3SyncManager {
 		syncDb: SyncDatabase,
 		saveDbCallback: (db: SyncDatabase) => Promise<void>,
 		updateStatusCallback: (status: string) => void,
-		onConflictsDetected?: (conflicts: PendingConflict[], isManual: boolean) => void
+		onConflictsDetected?: (conflicts: PendingConflict[], isManual: boolean) => void,
+		logStream?: SyncLogStream
 	) {
 		this.app = app;
 		this.settings = settings;
@@ -80,6 +83,7 @@ export class S3SyncManager {
 		this.saveDbCallback = saveDbCallback;
 		this.updateStatusCallback = updateStatusCallback;
 		this.onConflictsDetected = onConflictsDetected;
+		this.logStream = logStream || new SyncLogStream();
 	}
 
 	/**
@@ -87,18 +91,20 @@ export class S3SyncManager {
 	 */
 	async sync(isManual = false): Promise<void> {
 		if (this.isSyncing) {
-			console.log('S3 Sync already in progress, skipping...');
+			this.logStream.log('warn', 'S3 Sync already in progress, skipping...');
 			return;
 		}
 
 		// Validate credentials first
 		if (!this.settings.bucket || !this.settings.accessKeyId || !this.settings.secretAccessKey) {
 			this.updateStatusCallback('Configuration Error');
+			this.logStream.log('error', 'Sync configuration is missing. Setup S3 credentials in settings first.');
 			return;
 		}
 
 		this.isSyncing = true;
 		this.updateStatusCallback('Syncing...');
+		this.logStream.log('info', 'Starting S3 sync cycle...');
 		new Notice('S3 Sync: Starting sync...');
 		
 		// Reset pending conflicts for this run
@@ -111,6 +117,7 @@ export class S3SyncManager {
 				if (!this.settings.passphrase) {
 					throw new Error('Encryption is enabled but no passphrase is set.');
 				}
+				this.logStream.log('info', 'Deriving encryption key...');
 				cryptoKey = await deriveKey(this.settings.passphrase, this.settings.bucket);
 			}
 
@@ -124,6 +131,7 @@ export class S3SyncManager {
 			});
 
 			// 3. Gather Remote S3 State
+			this.logStream.log('info', 'Listing remote S3 objects...');
 			const remoteFiles: Record<string, { etag: string; size: number; key: string; lastModified: string }> = {};
 			let continuationToken: string | undefined = undefined;
 			do {
@@ -137,6 +145,7 @@ export class S3SyncManager {
 								path = await decryptPath(path, cryptoKey);
 							} catch (e) {
 								console.warn(`S3 Sync: Failed to decrypt remote path '${path}', skipping. Error:`, e);
+								this.logStream.log('warn', `Failed to decrypt remote path '${path}', skipping.`);
 								continue;
 							}
 						}
@@ -150,6 +159,7 @@ export class S3SyncManager {
 			} while (continuationToken);
 
 			// 4. Gather Local Vault State
+			this.logStream.log('info', 'Gathering local file states...');
 			const localFiles: Record<string, { file: TFile; mtime: number; size: number }> = {};
 			const allFiles = this.app.vault.getFiles();
 			for (const file of allFiles) {
@@ -177,18 +187,26 @@ export class S3SyncManager {
 				...Object.keys(this.syncDb.files || {}),
 			]);
 
-			let uploadsCount = 0;
-			let downloadsCount = 0;
-			let deletesCount = 0;
-			let conflictsCount = 0;
-
 			// Initialize syncDb files registry if empty
 			if (!this.syncDb.files) {
 				this.syncDb.files = {};
 			}
 			const dbFiles = this.syncDb.files;
 
-			// 6. Iterate and make sync decisions
+			// Define planning interface
+			interface SyncPlanItem {
+				path: string;
+				action: 'upload' | 'download' | 'deleteLocal' | 'deleteRemote' | 'conflict' | 'dbMatchOnly' | 'deleteDbOnly';
+				local?: typeof localFiles[string];
+				remote?: typeof remoteFiles[string];
+				db?: typeof dbFiles[string];
+				isText?: boolean;
+			}
+
+			// Planning Phase
+			this.logStream.log('info', 'Comparing local and remote file states to build sync plan...');
+			const plan: SyncPlanItem[] = [];
+
 			for (const path of allPaths) {
 				if (isPathExcluded(path, this.settings.excludedPaths)) {
 					continue;
@@ -196,99 +214,149 @@ export class S3SyncManager {
 				const local = localFiles[path];
 				const remote = remoteFiles[path];
 				const db = dbFiles[path];
-
 				const isText = path.endsWith('.md') || path.endsWith('.txt');
 
-				// Case 1: Exists in Local, Remote, and DB
 				if (local && remote && db) {
 					const localChanged = local.mtime !== db.mtime;
 					const remoteChanged = remote.etag !== db.etag;
 
 					if (localChanged && remoteChanged) {
-						// Conflict!
-						const queued = await this.handleConflict(path, local.file, remote.key, s3Client, cryptoKey, isText, remote.etag, remote.lastModified);
-						if (queued) conflictsCount++;
+						plan.push({ path, action: 'conflict', local, remote, db, isText });
 					} else if (localChanged) {
-						// Local changed only
-						uploadsCount++;
-						await this.uploadLocalFile(path, local.file, s3Client, cryptoKey);
+						plan.push({ path, action: 'upload', local, remote, db });
 					} else if (remoteChanged) {
-						// Remote changed only
-						downloadsCount++;
-						await this.downloadRemoteFile(path, remote.key, s3Client, cryptoKey, remote.etag);
+						plan.push({ path, action: 'download', local, remote, db });
 					}
-				}
-				// Case 2: Exists in Local and DB, but NOT Remote (Deleted remotely)
-				else if (local && !remote && db) {
+				} else if (local && !remote && db) {
 					const localChanged = local.mtime !== db.mtime;
 					if (localChanged) {
-						// Local modified it after remote deleted it. Re-upload.
-						uploadsCount++;
-						await this.uploadLocalFile(path, local.file, s3Client, cryptoKey);
+						plan.push({ path, action: 'upload', local, remote, db });
 					} else {
-						// Normal deletion from remote. Delete locally.
-						deletesCount++;
-						await this.app.vault.delete(local.file);
-						await this.deleteLocalCache(path);
-						delete dbFiles[path];
+						plan.push({ path, action: 'deleteLocal', local, remote, db });
 					}
-				}
-				// Case 3: Exists in Remote and DB, but NOT Local (Deleted locally)
-				else if (!local && remote && db) {
+				} else if (!local && remote && db) {
 					const remoteChanged = remote.etag !== db.etag;
 					if (remoteChanged) {
-						// Remote modified it after local deleted it. Re-download.
-						downloadsCount++;
-						await this.downloadRemoteFile(path, remote.key, s3Client, cryptoKey, remote.etag);
+						plan.push({ path, action: 'download', local, remote, db });
 					} else {
-						// Normal deletion from local. Delete remotely.
-						deletesCount++;
-						await s3Client.deleteObject(remote.key);
-						await this.deleteLocalCache(path);
-						delete dbFiles[path];
+						plan.push({ path, action: 'deleteRemote', local, remote, db });
 					}
-				}
-				// Case 4: Exists in Local and Remote, but NOT DB (New on both sides, e.g. first sync or sync lost)
-				else if (local && remote && !db) {
-					// Compare content hashes
+				} else if (local && remote && !db) {
 					const localData = await this.app.vault.readBinary(local.file);
 					const localMd5 = md5(localData);
-					
-					// ETag is MD5 of compressed + encrypted S3 object if encrypted/compressed, 
-					// so we can't easily compare hashes directly unless encryption is disabled.
 					let hashesMatch = false;
 					if (!this.settings.encrypt && !this.settings.compress) {
 						hashesMatch = localMd5 === remote.etag;
 					}
 
 					if (hashesMatch) {
-						// Identical, just match states
-						dbFiles[path] = {
-							mtime: local.mtime,
-							etag: remote.etag,
-							size: local.size,
-						};
-						await this.writeLocalCache(path, localData);
+						plan.push({ path, action: 'dbMatchOnly', local, remote, db });
 					} else {
-						// Different, treat as conflict
-						const queued = await this.handleConflict(path, local.file, remote.key, s3Client, cryptoKey, isText, remote.etag, remote.lastModified);
-						if (queued) conflictsCount++;
+						plan.push({ path, action: 'conflict', local, remote, db, isText });
 					}
+				} else if (local && !remote && !db) {
+					plan.push({ path, action: 'upload', local, remote, db });
+				} else if (!local && remote && !db) {
+					plan.push({ path, action: 'download', local, remote, db });
+				} else if (!local && !remote && db) {
+					plan.push({ path, action: 'deleteDbOnly', local, remote, db });
 				}
-				// Case 5: Exists in Local only
-				else if (local && !remote && !db) {
-					uploadsCount++;
-					await this.uploadLocalFile(path, local.file, s3Client, cryptoKey);
+			}
+
+			// Filter actions that perform actual sync transfers or conflicts
+			const syncActions = plan.filter(item => ['upload', 'download', 'deleteLocal', 'deleteRemote', 'conflict'].includes(item.action));
+			const totalToSync = syncActions.length;
+
+			this.logStream.log('info', `Sync plan built. Total files to sync: ${totalToSync}`);
+
+			let uploadsCount = 0;
+			let downloadsCount = 0;
+			let deletesCount = 0;
+			let conflictsCount = 0;
+			let processedCount = 0;
+
+			// Execution Phase
+			for (const item of plan) {
+				const { path, action, local, remote, isText } = item;
+
+				if (action === 'dbMatchOnly') {
+					dbFiles[path] = {
+						mtime: local!.mtime,
+						etag: remote!.etag,
+						size: local!.size,
+					};
+					const localData = await this.app.vault.readBinary(local!.file);
+					await this.writeLocalCache(path, localData);
+					continue;
 				}
-				// Case 6: Exists in Remote only
-				else if (!local && remote && !db) {
-					downloadsCount++;
-					await this.downloadRemoteFile(path, remote.key, s3Client, cryptoKey, remote.etag);
-				}
-				// Case 7: Exists in DB only (Deleted on both sides)
-				else if (!local && !remote && db) {
+
+				if (action === 'deleteDbOnly') {
 					await this.deleteLocalCache(path);
 					delete dbFiles[path];
+					continue;
+				}
+
+				processedCount++;
+				const progressPrefix = `[${processedCount}/${totalToSync}]`;
+
+				if (action === 'upload') {
+					this.logStream.log('info', `${progressPrefix} Uploading: ${path}`);
+					try {
+						await this.uploadLocalFile(path, local!.file, s3Client, cryptoKey);
+						uploadsCount++;
+						this.logStream.log('success', `${progressPrefix} Upload completed: ${path}`);
+					} catch (err: any) {
+						this.logStream.log('error', `${progressPrefix} Upload failed for ${path}: ${err.message}`);
+						throw err;
+					}
+				} else if (action === 'download') {
+					this.logStream.log('info', `${progressPrefix} Downloading: ${path}`);
+					try {
+						await this.downloadRemoteFile(path, remote!.key, s3Client, cryptoKey, remote!.etag);
+						downloadsCount++;
+						this.logStream.log('success', `${progressPrefix} Download completed: ${path}`);
+					} catch (err: any) {
+						this.logStream.log('error', `${progressPrefix} Download failed for ${path}: ${err.message}`);
+						throw err;
+					}
+				} else if (action === 'deleteLocal') {
+					this.logStream.log('info', `${progressPrefix} Deleting local file: ${path}`);
+					try {
+						await this.app.vault.delete(local!.file);
+						await this.deleteLocalCache(path);
+						delete dbFiles[path];
+						deletesCount++;
+						this.logStream.log('success', `${progressPrefix} Deleted local file: ${path}`);
+					} catch (err: any) {
+						this.logStream.log('error', `${progressPrefix} Local deletion failed for ${path}: ${err.message}`);
+						throw err;
+					}
+				} else if (action === 'deleteRemote') {
+					this.logStream.log('info', `${progressPrefix} Deleting remote S3 object: ${path}`);
+					try {
+						await s3Client.deleteObject(remote!.key);
+						await this.deleteLocalCache(path);
+						delete dbFiles[path];
+						deletesCount++;
+						this.logStream.log('success', `${progressPrefix} Deleted remote object: ${path}`);
+					} catch (err: any) {
+						this.logStream.log('error', `${progressPrefix} Remote deletion failed for ${path}: ${err.message}`);
+						throw err;
+					}
+				} else if (action === 'conflict') {
+					this.logStream.log('warn', `${progressPrefix} Sync conflict: ${path}`);
+					try {
+						const queued = await this.handleConflict(path, local!.file, remote!.key, s3Client, cryptoKey, !!isText, remote!.etag, remote!.lastModified);
+						if (queued) {
+							conflictsCount++;
+							this.logStream.log('warn', `${progressPrefix} Conflict queued for resolution: ${path}`);
+						} else {
+							this.logStream.log('success', `${progressPrefix} Conflict auto-merged: ${path}`);
+						}
+					} catch (err: any) {
+						this.logStream.log('error', `${progressPrefix} Conflict resolution setup failed for ${path}: ${err.message}`);
+						throw err;
+					}
 				}
 			}
 
@@ -309,7 +377,8 @@ export class S3SyncManager {
 				summaryMsg += ' Everything is up-to-date.';
 			}
 			new Notice(summaryMsg);
-			console.log(summaryMsg);
+			
+			this.logStream.log(this.pendingConflicts.length > 0 ? 'warn' : 'success', summaryMsg);
 
 			// Trigger callback if conflicts are found
 			if (this.pendingConflicts.length > 0 && this.onConflictsDetected) {
@@ -319,6 +388,7 @@ export class S3SyncManager {
 		} catch (error: any) {
 			console.error('S3 Sync Error:', error);
 			this.updateStatusCallback('Error');
+			this.logStream.log('error', `Sync failed: ${error.message}`);
 			new Notice(`S3 Sync failed: ${error.message}`);
 		} finally {
 			this.isSyncing = false;
@@ -559,7 +629,7 @@ export class S3SyncManager {
 		choice: 'local' | 'remote' | 'merge'
 	): Promise<void> {
 		const { path, localFile, s3Key, remoteData, remoteEtag } = conflict;
-		console.log(`Resolving conflict for ${path} with choice: ${choice}`);
+		this.logStream.log('info', `Resolving conflict for ${path} using choice: ${choice}`);
 
 		// Instantiate clients & key
 		const s3Client = new S3Client({
@@ -575,78 +645,86 @@ export class S3SyncManager {
 			cryptoKey = await deriveKey(this.settings.passphrase, this.settings.bucket);
 		}
 
-		if (choice === 'local') {
-			// Keep local: upload local to S3
-			await this.uploadLocalFile(path, localFile, s3Client, cryptoKey);
-			new Notice(`Conflict resolved: Kept local version for ${localFile.name}`);
-		} else if (choice === 'remote') {
-			// Keep remote: download remote to local
-			await this.downloadRemoteFile(path, s3Key, s3Client, cryptoKey, remoteEtag);
-			new Notice(`Conflict resolved: Kept remote version for ${localFile.name}`);
-		} else if (choice === 'merge') {
-			// Merge: only applicable for text
-			if (!conflict.isText) return;
+		try {
+			if (choice === 'local') {
+				// Keep local: upload local to S3
+				await this.uploadLocalFile(path, localFile, s3Client, cryptoKey);
+				this.logStream.log('success', `Conflict resolved: Kept local version for ${path}`);
+				new Notice(`Conflict resolved: Kept local version for ${localFile.name}`);
+			} else if (choice === 'remote') {
+				// Keep remote: download remote to local
+				await this.downloadRemoteFile(path, s3Key, s3Client, cryptoKey, remoteEtag);
+				this.logStream.log('success', `Conflict resolved: Kept remote version for ${path}`);
+				new Notice(`Conflict resolved: Kept remote version for ${localFile.name}`);
+			} else if (choice === 'merge') {
+				// Merge: only applicable for text
+				if (!conflict.isText) return;
 
-			const localText = await this.app.vault.read(localFile);
-			const remoteText = new TextDecoder().decode(remoteData);
-			
-			let baseText = '';
-			const cachePath = `${this.cacheDir}/${path}`;
-			if (await this.app.vault.adapter.exists(cachePath)) {
-				baseText = await this.app.vault.adapter.read(cachePath);
-			}
+				const localText = await this.app.vault.read(localFile);
+				const remoteText = new TextDecoder().decode(remoteData);
+				
+				let baseText = '';
+				const cachePath = `${this.cacheDir}/${path}`;
+				if (await this.app.vault.adapter.exists(cachePath)) {
+					baseText = await this.app.vault.adapter.read(cachePath);
+				}
 
-			const localLines = localText.split('\n');
-			const remoteLines = remoteText.split('\n');
-			const baseLines = baseText.split('\n');
+				const localLines = localText.split('\n');
+				const remoteLines = remoteText.split('\n');
+				const baseLines = baseText.split('\n');
 
-			const localMtime = localFile.stat.mtime;
-			const remoteMtime = Date.parse(conflict.remoteLastModified);
-			const localIsEarlier = isNaN(remoteMtime) ? true : localMtime < remoteMtime;
+				const localMtime = localFile.stat.mtime;
+				const remoteMtime = Date.parse(conflict.remoteLastModified);
+				const localIsEarlier = isNaN(remoteMtime) ? true : localMtime < remoteMtime;
 
-			const mergeChunks = diff3Merge(localLines, baseLines, remoteLines);
-			const mergedLines: string[] = [];
+				const mergeChunks = diff3Merge(localLines, baseLines, remoteLines);
+				const mergedLines: string[] = [];
 
-			for (const chunk of mergeChunks) {
-				if ('ok' in chunk) {
-					mergedLines.push(...chunk.ok);
-				} else if ('conflict' in chunk) {
-					const c = chunk.conflict;
-					// Force stack both versions (since user chose to merge)
-					if (localIsEarlier) {
-						mergedLines.push(...c.a);
-						mergedLines.push(...c.b);
-					} else {
-						mergedLines.push(...c.b);
-						mergedLines.push(...c.a);
+				for (const chunk of mergeChunks) {
+					if ('ok' in chunk) {
+						mergedLines.push(...chunk.ok);
+					} else if ('conflict' in chunk) {
+						const c = chunk.conflict;
+						// Force stack both versions (since user chose to merge)
+						if (localIsEarlier) {
+							mergedLines.push(...c.a);
+							mergedLines.push(...c.b);
+						} else {
+							mergedLines.push(...c.b);
+							mergedLines.push(...c.a);
+						}
 					}
 				}
+
+				const mergedText = mergedLines.join('\n');
+				const mergedBuffer = new TextEncoder().encode(mergedText).buffer;
+
+				// Write merged locally
+				await this.app.vault.modify(localFile, mergedText);
+
+				// Upload to S3
+				let uploadData = mergedBuffer;
+				if (this.settings.encrypt && cryptoKey) {
+					uploadData = await encryptBuffer(mergedBuffer, cryptoKey, this.settings.compress, localFile.stat.mtime);
+				}
+				const newEtag = await s3Client.putObject(s3Key, uploadData);
+
+				// Update db
+				this.syncDb.files[path] = {
+					mtime: localFile.stat.mtime,
+					etag: newEtag,
+					size: localFile.stat.size,
+				};
+
+				// Update cache
+				await this.writeLocalCache(path, mergedBuffer);
+
+				this.logStream.log('success', `Conflict resolved: Merged both versions for ${path}`);
+				new Notice(`Conflict resolved: Merged both versions for ${localFile.name}`);
 			}
-
-			const mergedText = mergedLines.join('\n');
-			const mergedBuffer = new TextEncoder().encode(mergedText).buffer;
-
-			// Write merged locally
-			await this.app.vault.modify(localFile, mergedText);
-
-			// Upload to S3
-			let uploadData = mergedBuffer;
-			if (this.settings.encrypt && cryptoKey) {
-				uploadData = await encryptBuffer(mergedBuffer, cryptoKey, this.settings.compress, localFile.stat.mtime);
-			}
-			const newEtag = await s3Client.putObject(s3Key, uploadData);
-
-			// Update db
-			this.syncDb.files[path] = {
-				mtime: localFile.stat.mtime,
-				etag: newEtag,
-				size: localFile.stat.size,
-			};
-
-			// Update cache
-			await this.writeLocalCache(path, mergedBuffer);
-
-			new Notice(`Conflict resolved: Merged both versions for ${localFile.name}`);
+		} catch (err: any) {
+			this.logStream.log('error', `Conflict resolution failed for ${path}: ${err.message}`);
+			throw err;
 		}
 
 		// Remove from pending list in-place

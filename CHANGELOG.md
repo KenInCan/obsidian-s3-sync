@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-19
+
+### Added
+- **Persistent Editor Status Indicator**: Added a floating top-right status widget in active editor tabs displaying persistent sync status and auto-collapsing real-time logs. Clicking the status widget opens the conflict resolver when conflicts are present.
+- **In-Memory Logs View**: Added an in-memory sync log stream (up to 1,000 entries) and a dedicated workspace tab with a clean document vibe (`file-text` icon), clear button, and auto-scroll options.
+- **Exclusion Indication**: Added a red dashed border and warning messages to the editor status indicator when editing sync-excluded notes or folders.
+- **Tab Switch & File Open Sync Triggers**: Added options and settings to automatically run sync when switching editor tabs or opening a file, optimized with a 1-second debounce window to prevent API request spam.
+- **Notice Position Override**: Shifted default Obsidian notices down by 95px to prevent overlaps with the top-right editor status indicator.
+
+---
+
 ## [0.3.0] - 2026-06-15
 
 ### Added
