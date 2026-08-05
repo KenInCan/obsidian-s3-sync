@@ -179,7 +179,7 @@ export class ConflictResolutionModal extends Modal {
 			totalBlocks = blockId;
 		}
 
-		const lineChoices: Record<string, 'local' | 'remote'> = {};
+		const lineChoices: Record<string, 'local' | 'remote' | 'concat'> = {};
 		let confirmMergeBtn: ButtonComponent | null = null;
 
 		const updateLineStyles = () => {
@@ -196,7 +196,7 @@ export class ConflictResolutionModal extends Modal {
 				line.classList.remove('is-deselected-conflict-line');
 
 				if (choice !== undefined) {
-					if (side === choice) {
+					if (choice === 'concat' || side === choice) {
 						line.classList.add('is-selected-conflict-line');
 					} else {
 						line.classList.add('is-deselected-conflict-line');
@@ -237,7 +237,16 @@ export class ConflictResolutionModal extends Modal {
 					lineEl.dataset.lineSide = 'local';
 					lineEl.addEventListener('click', () => {
 						const key = `${item.blockId}_${item.slotOffset}`;
-						lineChoices[key] = 'local';
+						const current = lineChoices[key];
+						if (current === undefined) {
+							lineChoices[key] = 'local';
+						} else if (current === 'local') {
+							delete lineChoices[key];
+						} else if (current === 'concat') {
+							lineChoices[key] = 'remote';
+						} else {
+							lineChoices[key] = 'concat';
+						}
 						updateLineStyles();
 					});
 					if (!firstConflictEl) firstConflictEl = lineEl;
@@ -301,7 +310,16 @@ export class ConflictResolutionModal extends Modal {
 					lineEl.dataset.lineSide = 'remote';
 					lineEl.addEventListener('click', () => {
 						const key = `${item.blockId}_${item.slotOffset}`;
-						lineChoices[key] = 'remote';
+						const current = lineChoices[key];
+						if (current === undefined) {
+							lineChoices[key] = 'remote';
+						} else if (current === 'remote') {
+							delete lineChoices[key];
+						} else if (current === 'concat') {
+							lineChoices[key] = 'local';
+						} else {
+							lineChoices[key] = 'concat';
+						}
 						updateLineStyles();
 					});
 					if (!firstConflictEl) firstConflictEl = lineEl;
@@ -350,6 +368,18 @@ export class ConflictResolutionModal extends Modal {
 
 		// Confirm button on the left next to Skip (if text and has conflict blocks)
 		if (this.conflict.isText && totalSlots > 0) {
+			new ButtonComponent(footer)
+				.setButtonText('Concat both')
+				.onClick(() => {
+					for (let bid = 0; bid < totalBlocks; bid++) {
+						const maxLen = blockSlotCounts[bid];
+						for (let i = 0; i < maxLen; i++) {
+							lineChoices[`${bid}_${i}`] = 'concat';
+						}
+					}
+					updateLineStyles();
+				});
+
 			const mergeBtnComponent = new ButtonComponent(footer)
 				.setButtonText('Confirm')
 				.setDisabled(true)
@@ -386,6 +416,22 @@ export class ConflictResolutionModal extends Modal {
 									} else if (choice === 'remote') {
 										if (i < c.b.length) {
 											finalMergedLines.push(c.b[i]);
+										}
+									} else if (choice === 'concat') {
+										if (localIsEarlier) {
+											if (i < c.a.length) {
+												finalMergedLines.push(c.a[i]);
+											}
+											if (i < c.b.length) {
+												finalMergedLines.push(c.b[i]);
+											}
+										} else {
+											if (i < c.b.length) {
+												finalMergedLines.push(c.b[i]);
+											}
+											if (i < c.a.length) {
+												finalMergedLines.push(c.a[i]);
+											}
 										}
 									}
 								}
