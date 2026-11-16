@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, obsidianmd/rule-custom-message, obsidianmd/prefer-file-manager-trash-file, obsidianmd/no-tfile-tfolder-cast, obsidianmd/ui/sentence-case, @typescript-eslint/no-explicit-any */
-import { App, Notice, TFile } from 'obsidian';
+import { App, Notice, TFile, TextFileView } from 'obsidian';
 // @ts-ignore
 import { diff3Merge } from 'node-diff3';
 import { S3Client } from './s3';
@@ -162,6 +162,8 @@ export class S3SyncManager {
 			} while (continuationToken);
 
 			// 4. Gather Local Vault State
+			// Flush pending editor saves first so on-disk mtimes reflect what the user typed.
+			await this.flushOpenEditors();
 			this.logStream.log('info', 'Gathering local file states...');
 			const localFiles: Record<string, { file: TFile; mtime: number; size: number }> = {};
 			const allFiles = this.app.vault.getFiles();
@@ -276,7 +278,20 @@ export class S3SyncManager {
 			let downloadsCount = 0;
 			let deletesCount = 0;
 			let conflictsCount = 0;
+			let deferredCount = 0;
 			let processedCount = 0;
+
+			// Skip writes that would clobber a local edit made after the plan was built.
+			// The sync DB entry is left untouched, so the next sync sees both sides changed
+			// and routes the file through conflict handling instead of silently overwriting it.
+			const deferIfLocalChanged = async (path: string, plannedMtime: number | undefined, progressPrefix: string): Promise<boolean> => {
+				if (await this.localChangedSincePlan(path, plannedMtime)) {
+					deferredCount++;
+					this.logStream.log('warn', `${progressPrefix} Deferred: ${path} changed locally during sync; it will be reconciled on the next sync.`);
+					return true;
+				}
+				return false;
+			};
 
 			// Execution Phase
 			for (const item of plan) {
@@ -313,6 +328,7 @@ export class S3SyncManager {
 						throw err;
 					}
 				} else if (action === 'download') {
+					if (await deferIfLocalChanged(path, local?.mtime, progressPrefix)) continue;
 					this.logStream.log('info', `${progressPrefix} Downloading: ${path}`);
 					try {
 						await this.downloadRemoteFile(path, remote!.key, s3Client, cryptoKey, remote!.etag);
@@ -323,6 +339,7 @@ export class S3SyncManager {
 						throw err;
 					}
 				} else if (action === 'deleteLocal') {
+					if (await deferIfLocalChanged(path, local!.mtime, progressPrefix)) continue;
 					this.logStream.log('info', `${progressPrefix} Deleting local file: ${path}`);
 					try {
 						await this.app.vault.delete(local!.file);
@@ -349,10 +366,13 @@ export class S3SyncManager {
 				} else if (action === 'conflict') {
 					this.logStream.log('warn', `${progressPrefix} Sync conflict: ${path}`);
 					try {
-						const queued = await this.handleConflict(path, local!.file, remote!.key, s3Client, cryptoKey, !!isText, remote!.etag, remote!.lastModified);
-						if (queued) {
+						const outcome = await this.handleConflict(path, local!.file, remote!.key, s3Client, cryptoKey, !!isText, remote!.etag, remote!.lastModified, local!.mtime);
+						if (outcome === 'queued') {
 							conflictsCount++;
 							this.logStream.log('warn', `${progressPrefix} Conflict queued for resolution: ${path}`);
+						} else if (outcome === 'deferred') {
+							deferredCount++;
+							this.logStream.log('warn', `${progressPrefix} Deferred: ${path} changed locally during conflict handling; it will be reconciled on the next sync.`);
 						} else {
 							this.logStream.log('success', `${progressPrefix} Conflict auto-merged: ${path}`);
 						}
@@ -374,8 +394,11 @@ export class S3SyncManager {
 			
 			// Show summary notice
 			let summaryMsg = 'S3 Sync complete.';
-			if (uploadsCount > 0 || downloadsCount > 0 || deletesCount > 0 || conflictsCount > 0) {
+			if (uploadsCount > 0 || downloadsCount > 0 || deletesCount > 0 || conflictsCount > 0 || deferredCount > 0) {
 				summaryMsg += ` Uploads: ${uploadsCount}, Downloads: ${downloadsCount}, Deletions: ${deletesCount}, Conflicts: ${conflictsCount}`;
+				if (deferredCount > 0) {
+					summaryMsg += `, Deferred: ${deferredCount}`;
+				}
 			} else {
 				summaryMsg += ' Everything is up-to-date.';
 			}
@@ -408,11 +431,16 @@ export class S3SyncManager {
 		cryptoKey: CryptoKey | null
 	): Promise<void> {
 		console.log(`Uploading ${path}...`);
+		// Capture stat BEFORE reading. If the file is saved while we read or upload, the live
+		// mtime moves past this value and the next sync re-uploads it instead of treating the
+		// newer edit as already synced.
+		const mtimeAtRead = file.stat.mtime;
+		const sizeAtRead = file.stat.size;
 		const rawData = await this.app.vault.readBinary(file);
-		
+
 		let uploadData = rawData;
 		if (this.settings.encrypt && cryptoKey) {
-			uploadData = await encryptBuffer(rawData, cryptoKey, this.settings.compress, file.stat.mtime);
+			uploadData = await encryptBuffer(rawData, cryptoKey, this.settings.compress, mtimeAtRead);
 		}
 
 		const s3Key = await this.getS3Key(path, cryptoKey);
@@ -420,9 +448,9 @@ export class S3SyncManager {
 
 		// Update database
 		this.syncDb.files[path] = {
-			mtime: file.stat.mtime,
+			mtime: mtimeAtRead,
 			etag: newEtag,
-			size: file.stat.size,
+			size: sizeAtRead,
 		};
 
 		// Write to local cache (plain text)
@@ -474,7 +502,8 @@ export class S3SyncManager {
 
 	/**
 	 * Handles a conflict by classifying insert vs update, auto-merging inserts and queueing updates.
-	 * Returns true if the conflict was queued for manual resolution, false if auto-resolved.
+	 * Returns 'queued' if the conflict was queued for manual resolution, 'resolved' if auto-resolved,
+	 * or 'deferred' if the local file changed mid-handling and was left untouched for the next sync.
 	 */
 	private async handleConflict(
 		path: string,
@@ -484,16 +513,20 @@ export class S3SyncManager {
 		cryptoKey: CryptoKey | null,
 		isText: boolean,
 		remoteEtag: string,
-		remoteLastModified: string
-	): Promise<boolean> {
+		remoteLastModified: string,
+		plannedMtime: number
+	): Promise<'queued' | 'resolved' | 'deferred'> {
 		if (this.settings.conflictStrategy === 'local') {
 			this.logStream.log('info', `Conflict resolution strategy is 'Keep local', auto-resolving ${path}`);
 			await this.uploadLocalFile(path, localFile, s3Client, cryptoKey);
-			return false;
+			return 'resolved';
 		} else if (this.settings.conflictStrategy === 'remote') {
+			if (await this.localChangedSincePlan(path, plannedMtime)) {
+				return 'deferred';
+			}
 			this.logStream.log('info', `Conflict resolution strategy is 'Keep remote', auto-resolving ${path}`);
 			await this.downloadRemoteFile(path, s3Key, s3Client, cryptoKey, remoteEtag);
-			return false;
+			return 'resolved';
 		}
 
 		console.log(`Conflict detected in ${path}`);
@@ -512,6 +545,7 @@ export class S3SyncManager {
 
 		if (isText) {
 			// Text file: Run line-by-line 3-way merge
+			const mtimeAtRead = localFile.stat.mtime;
 			const localText = await this.app.vault.read(localFile);
 			const remoteText = new TextDecoder().decode(remoteData);
 			
@@ -584,11 +618,17 @@ export class S3SyncManager {
 						remoteLines: remoteConflictLines
 					}
 				});
-				return true;
+				return 'queued';
 			} else {
 				// Pure insertion conflict or no conflict (or clean merge)
 				const mergedText = mergedLines.join('\n');
 				const mergedBuffer = new TextEncoder().encode(mergedText).buffer;
+
+				// The merge was computed from the on-disk text read above. If the user saved
+				// or typed since then, writing it would drop those edits.
+				if (await this.localChangedSincePlan(path, mtimeAtRead)) {
+					return 'deferred';
+				}
 
 				// Write merged file locally
 				await this.app.vault.modify(localFile, mergedText);
@@ -616,7 +656,7 @@ export class S3SyncManager {
 				} else {
 					console.log(`Clean auto-merge succeeded for ${path}`);
 				}
-				return false;
+				return 'resolved';
 			}
 		} else {
 			// Binary file: Queue it as a conflict
@@ -630,7 +670,7 @@ export class S3SyncManager {
 				remoteLastModified,
 				isText: false
 			});
-			return true;
+			return 'queued';
 		}
 	}
 
@@ -762,6 +802,65 @@ export class S3SyncManager {
 		} else {
 			this.updateStatusCallback('Success');
 		}
+	}
+
+	/**
+	 * Find the open editor view (if any) showing the given path.
+	 */
+	private findOpenTextView(path: string): TextFileView | null {
+		let found: TextFileView | null = null;
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			const view = leaf.view;
+			if (!found && view instanceof TextFileView && view.file?.path === path) {
+				found = view;
+			}
+		});
+		return found;
+	}
+
+	/**
+	 * True when an open editor holds content for this path that differs from what is on disk,
+	 * i.e. the user typed something Obsidian has not saved yet.
+	 */
+	private async hasUnsavedEdits(path: string): Promise<boolean> {
+		const view = this.findOpenTextView(path);
+		if (!view || !view.file) return false;
+		const onDisk = await this.app.vault.read(view.file);
+		const normalize = (s: string) => s.replace(/\r\n/g, '\n');
+		return normalize(view.getViewData()) !== normalize(onDisk);
+	}
+
+	/**
+	 * Force every open editor with unsaved changes to write to disk now,
+	 * instead of waiting for Obsidian's debounced save.
+	 */
+	private async flushOpenEditors(): Promise<void> {
+		const views: TextFileView[] = [];
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			if (leaf.view instanceof TextFileView && leaf.view.file) {
+				views.push(leaf.view);
+			}
+		});
+		for (const view of views) {
+			if (view.file && await this.hasUnsavedEdits(view.file.path)) {
+				await view.save();
+			}
+		}
+	}
+
+	/**
+	 * True when the local file changed after the sync plan was built (saved, created, deleted,
+	 * or has unsaved editor content). Used to avoid overwriting edits made during a sync.
+	 */
+	private async localChangedSincePlan(path: string, plannedMtime: number | undefined): Promise<boolean> {
+		const current = this.app.vault.getAbstractFileByPath(path);
+		if (plannedMtime === undefined) {
+			return current !== null;
+		}
+		if (!(current instanceof TFile) || current.stat.mtime !== plannedMtime) {
+			return true;
+		}
+		return this.hasUnsavedEdits(path);
 	}
 
 	/**
