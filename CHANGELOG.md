@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-11-16
+
+### Fixed
+- **Lost Edits During Sync**: Edits typed shortly before a sync (not yet saved to disk by Obsidian) could be overwritten by a remote download. Open editors with unsaved changes are now flushed to disk before sync starts.
+- **Edits Made Mid-Sync**: Downloads, local deletions, conflict auto-merges and "Keep remote" auto-resolution now re-check the local file right before writing. If it changed after the sync plan was built, the write is deferred and the file is reconciled as a conflict on the next sync.
+- **Uploads Marked Synced Too Early**: Uploads now record the file's modification time from before it was read, so an edit saved during an upload is re-uploaded on the next sync instead of being treated as already synced.
+
+---
+
 ## [0.7.0] - 2026-06-29
 
 ### Added
